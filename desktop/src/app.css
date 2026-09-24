@@ -1,0 +1,153 @@
+/* EMX for the desktop. One quiet surface, three panes, the accent kept
+   for what needs it. Colours follow the system. */
+
+:root {
+  --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --bg: #f4f4f1;
+  --panel: #ffffff;
+  --well: #ebebe6;
+  --hover: #e4e4de;
+  --border: #dcdcd5;
+  --text: #17181b;
+  --muted: #6b6f77;
+  --faint: #a0a4ab;
+  --accent: #4d7c0f;
+  --accent-soft: rgba(77, 124, 15, 0.12);
+  --danger: #b42318;
+  --warn: #b7791f;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #131417;
+    --panel: #1a1c20;
+    --well: #23262b;
+    --hover: #2a2e34;
+    --border: #2e3238;
+    --text: #e8e9ea;
+    --muted: #9aa0a8;
+    --faint: #5f656d;
+    --accent: #a3e635;
+    --accent-soft: rgba(163, 230, 53, 0.14);
+    --danger: #f97066;
+    --warn: #e0a030;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+a {
+  color: var(--accent);
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover {
+  background: var(--hover);
+}
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+@media (prefers-color-scheme: dark) {
+  .btn.primary {
+    color: #111;
+  }
+}
+.btn.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.btn.quiet:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.btn.sm {
+  padding: 3px 8px;
+  font-size: 13px;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.field {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  background: var(--panel);
+  user-select: text;
+}
+.field:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+textarea.field {
+  resize: vertical;
+  min-height: 160px;
+  line-height: 1.5;
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+.mono {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  border-radius: var(--r);
+  background: var(--text);
+  color: var(--bg);
+  font-size: 13px;
+  z-index: 50;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
+}
+.toast.problem {
+  background: var(--danger);
+  color: #fff;
+}
+kbd {
+  font: 11px var(--mono);
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--well);
+  color: var(--muted);
+}
