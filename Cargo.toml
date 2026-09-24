@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["sdk", "cli", "desktop/src-tauri"]
+default-members = ["sdk", "cli"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.80"
+repository = "https://github.com/elchi-studios/emx-client"
+homepage = "https://emxmail.ch"
+authors = ["Elchi Studios <hello@elchi.dev>"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

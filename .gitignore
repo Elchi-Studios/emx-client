@@ -1,0 +1,7 @@
+/target
+**/node_modules
+desktop/build
+desktop/.svelte-kit
+desktop/src-tauri/gen/schemas
+*.log
+.DS_Store
