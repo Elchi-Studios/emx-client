@@ -1,0 +1,20 @@
+[package]
+name = "emx-cli"
+version = "0.1.0"
+description = "EMX mail from the command line"
+license = "MPL-2.0"
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "emx"
+path = "src/main.rs"
+
+[dependencies]
+emx-sdk = { path = "../sdk", version = "0.1.0" }
+serde.workspace = true
+serde_json.workspace = true
