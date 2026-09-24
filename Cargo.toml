@@ -6,7 +6,7 @@ default-members = ["sdk", "cli"]
 [workspace.package]
 edition = "2021"
 rust-version = "1.80"
-repository = "https://github.com/elchi-studios/emx-client"
+repository = "https://github.com/Elchi-Studios/emx-client"
 homepage = "https://emxmail.ch"
 authors = ["Elchi Studios <hello@elchi.dev>"]
 
