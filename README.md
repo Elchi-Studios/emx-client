@@ -96,8 +96,10 @@ Tauri's prerequisites for each system are at
   with the scopes it needs and stored in a file only that person can
   read. In the desktop app it stays on the Rust side; the window never
   sees it.
-- **Nothing hidden.** Every call is in the API reference, and every call
-  here has a test against a server that answers the documented way.
+- **Nothing hidden.** Every call is in the API reference. The calls the
+  command line and the desktop app make are tested against a server that
+  answers the documented way; the SDK's remaining calls are not yet, and
+  the test list in `sdk/tests` says which are.
 - **The service is unversioned and only adds.** Fields are added, never
   renamed or removed; the types ignore what they do not know.
 
@@ -118,10 +120,12 @@ Keeping this list is half the battle.
 
 ## Status
 
-Alpha. The SDK covers every call a token can make, the command line does
-what the README shows, and the desktop app reads, searches, replies and
-follows the account live. Drafts between sessions, a keychain for the
-token and system notifications are next.
+Alpha. The SDK covers the calls a person's token makes for mail:
+reading, searching, sending, folders, the event stream and webhooks.
+Drafts, the administration calls and push are not in it yet. The
+command line does what the README shows, and the desktop app reads,
+searches, replies and follows the account live. Drafts between
+sessions, a keychain for the token and system notifications are next.
 
 ```sh
 cargo test --workspace --exclude emx-desktop
