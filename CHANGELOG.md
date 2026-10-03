@@ -5,6 +5,8 @@
 - `emx send` keeps every `--to`, `--cc` and `--bcc` when one is given
   more than once; it used to keep the last one only. Any other flag given
   twice is now refused instead of the last value winning.
+- `emx read <id> --html` works as the help says; it used to answer
+  "--html needs a value", because only `send --html` takes one.
 
 ## 0.1.0
 

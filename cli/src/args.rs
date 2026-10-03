@@ -10,7 +10,8 @@ pub struct Args {
 }
 
 /// Flags that take a value. Everything else that starts with `--` is a
-/// switch.
+/// switch. `--html` is both: `send --html H` takes the HTML body, `read
+/// <id> --html` is a switch; see [`takes_value`].
 const WITH_VALUE: &[&str] = &[
     "account",
     "mailbox",
@@ -44,6 +45,15 @@ const WITH_VALUE: &[&str] = &[
 /// never silently wins over the first.
 const REPEATABLE: &[&str] = &["to", "cc", "bcc", "attach"];
 
+/// Whether a flag takes a value, for the command given so far. Only
+/// `send` gives `--html` a value; for every other command it is a switch.
+fn takes_value(command: Option<&str>, name: &str) -> bool {
+    match (command, name) {
+        (Some(c), "html") => c == "send",
+        _ => WITH_VALUE.contains(&name),
+    }
+}
+
 impl Args {
     pub fn parse(raw: impl Iterator<Item = String>) -> Result<Args, String> {
         let mut a = Args {
@@ -58,6 +68,7 @@ impl Args {
                 a.positional.push(arg);
                 continue;
             }
+            let command = a.positional.first().map(|s| s.as_str());
             if arg == "--" {
                 only_positional = true;
                 continue;
@@ -67,7 +78,7 @@ impl Args {
                 Some((n, v)) => (n.to_string(), Some(v.to_string())),
                 None => (name.to_string(), None),
             };
-            if WITH_VALUE.contains(&name.as_str()) {
+            if takes_value(command, &name) {
                 let value = match inline {
                     Some(v) => v,
                     None => raw.next().ok_or_else(|| format!("--{name} needs a value"))?,
@@ -175,6 +186,20 @@ mod tests {
         );
         assert_eq!(a.addresses("cc"), "x@example.ch, y@example.ch");
         assert_eq!(a.addresses("bcc"), "");
+    }
+
+    #[test]
+    fn html_is_a_value_for_send_and_a_switch_for_read() {
+        let a = parse(&["read", "x1", "--html"]).unwrap();
+        assert!(a.switch("html"));
+        assert_eq!(a.positional, vec!["read", "x1"]);
+        let a = parse(&["--json", "read", "--html", "x1"]).unwrap();
+        assert!(a.switch("html"));
+        assert_eq!(a.positional, vec!["read", "x1"]);
+        let a = parse(&["send", "--to", "a@example.ch", "--html", "<p>Hi</p>"]).unwrap();
+        assert_eq!(a.value("html"), Some("<p>Hi</p>"));
+        assert!(!a.switch("html"));
+        assert!(parse(&["read", "x1", "--html=1"]).is_err());
     }
 
     #[test]
