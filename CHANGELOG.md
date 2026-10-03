@@ -41,6 +41,9 @@
   `bad_token`, the code the service sends.
 - The README examples compile, and are compiled with the doctests from
   now on. The SDK's README says how to depend on it.
+- The oldest Rust that builds the SDK and the command line is 1.85, as
+  their dependencies require, not 1.80; CI checks it. The desktop app
+  needs 1.88.
 
 ## 0.1.0
 

@@ -13,7 +13,7 @@
 
 [![CI](https://github.com/Elchi-Studios/emx-client/actions/workflows/ci.yml/badge.svg)](https://github.com/Elchi-Studios/emx-client/actions/workflows/ci.yml)
 ![Status](https://img.shields.io/badge/status-alpha-orange)
-[![Rust](https://img.shields.io/badge/Rust-1.80+-B7410E?logo=rust)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-1.85+-B7410E?logo=rust)](https://www.rust-lang.org)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
 [![License: AGPL-3.0](https://img.shields.io/badge/Desktop-AGPL--3.0-blue.svg)](desktop/LICENSE)
 [![Made by Elchi Studios](https://img.shields.io/badge/made%20by-Elchi%20Studios-8A2BE2)](https://github.com/Elchi-Studios)

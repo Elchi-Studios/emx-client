@@ -21,6 +21,14 @@ jobs:
       - run: cargo clippy --workspace --exclude emx-desktop --all-targets -- -D warnings
       - run: cargo test --workspace --exclude emx-desktop
 
+  msrv:
+    name: SDK and CLI on the oldest Rust they claim
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - run: cargo check --locked -p emx-sdk -p emx-cli --all-targets
+
   desktop:
     name: Desktop app
     runs-on: ubuntu-latest

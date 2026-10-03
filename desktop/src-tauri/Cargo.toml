@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "EMX for the desktop"
 license = "AGPL-3.0-only"
 edition.workspace = true
-rust-version.workspace = true
+# Tauri's dependencies need a newer compiler than the SDK and the CLI.
+rust-version = "1.88"
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
