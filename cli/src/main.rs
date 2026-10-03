@@ -41,6 +41,7 @@ Send
   send --to A [--cc A] [--bcc A] --subject S [--from A]
        [--text T | --body-file F | stdin] [--html H]
        [--attach FILE]... [--in-reply-to MSGID]
+                             --to, --cc and --bcc repeat, or take a list: a, b
 
 The screener
   contacts [--state approved|blocked]
@@ -419,7 +420,7 @@ fn keywords(
 
 fn mv(emx: &Client, account: &str, ids: &[&str], a: &Args, json: bool) -> Result<(), Error> {
     let to = a.value("to").ok_or_else(|| usage("move <ids...> --to MAILBOX"))?;
-    if ids.is_empty() {
+    if ids.is_empty() || a.values("to").len() > 1 {
         return Err(usage("move <ids...> --to MAILBOX"));
     }
     let target = find_mailbox(emx, account, to)?;
@@ -457,9 +458,11 @@ fn done(changed: &[String], json: bool) -> Result<(), Error> {
 // --- Send ----------------------------------------------------------------
 
 fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Error> {
-    let to = a
-        .value("to")
-        .ok_or_else(|| usage("send --to A --subject S [--text T]"))?;
+    // Recipients collect over repeated flags, as attachments do.
+    let to = a.addresses("to");
+    if to.is_empty() {
+        return Err(usage("send --to A --subject S [--text T]"));
+    }
     let from = match a.value("from") {
         Some(f) => f.to_string(),
         None => {
@@ -501,9 +504,9 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Error> {
     }
     let draft = Draft {
         from,
-        to: to.to_string(),
-        cc: a.value("cc").unwrap_or("").into(),
-        bcc: a.value("bcc").unwrap_or("").into(),
+        to,
+        cc: a.addresses("cc"),
+        bcc: a.addresses("bcc"),
         reply_to: a.value("reply-to").unwrap_or("").into(),
         subject: a.value("subject").unwrap_or("").into(),
         text,

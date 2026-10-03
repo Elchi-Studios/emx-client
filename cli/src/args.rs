@@ -39,6 +39,11 @@ const WITH_VALUE: &[&str] = &[
     "cursor",
 ];
 
+/// Flags that may be given more than once: recipients and attachments
+/// collect. Any other flag given twice is refused, so that a second value
+/// never silently wins over the first.
+const REPEATABLE: &[&str] = &["to", "cc", "bcc", "attach"];
+
 impl Args {
     pub fn parse(raw: impl Iterator<Item = String>) -> Result<Args, String> {
         let mut a = Args {
@@ -67,7 +72,11 @@ impl Args {
                     Some(v) => v,
                     None => raw.next().ok_or_else(|| format!("--{name} needs a value"))?,
                 };
-                a.values.entry(name).or_default().push(value);
+                let list = a.values.entry(name.clone()).or_default();
+                if !list.is_empty() && !REPEATABLE.contains(&name.as_str()) {
+                    return Err(format!("--{name} is given twice"));
+                }
+                list.push(value);
             } else {
                 if inline.is_some() {
                     return Err(format!("--{name} takes no value"));
@@ -84,6 +93,18 @@ impl Args {
 
     pub fn values(&self, name: &str) -> &[String] {
         self.values.get(name).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Every value of a repeatable address flag as one list, the way a
+    /// mail header writes it: `--to a --to b` is `a, b`. Empty when the
+    /// flag is not given.
+    pub fn addresses(&self, name: &str) -> String {
+        self.values(name)
+            .iter()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     pub fn switch(&self, name: &str) -> bool {
@@ -129,5 +150,38 @@ mod tests {
         assert_eq!(a.values("attach"), &["a", "b"]);
         assert!(Args::parse(["--mailbox"].iter().map(|s| s.to_string())).is_err());
         assert!(Args::parse(["--json=1"].iter().map(|s| s.to_string())).is_err());
+    }
+
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        Args::parse(args.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn repeated_recipients_are_all_kept() {
+        let a = parse(&[
+            "send",
+            "--to",
+            "nina@example.ch",
+            "--to",
+            "anna@example.ch, marco@example.ch",
+            "--cc=x@example.ch",
+            "--cc",
+            "y@example.ch",
+        ])
+        .unwrap();
+        assert_eq!(
+            a.addresses("to"),
+            "nina@example.ch, anna@example.ch, marco@example.ch"
+        );
+        assert_eq!(a.addresses("cc"), "x@example.ch, y@example.ch");
+        assert_eq!(a.addresses("bcc"), "");
+    }
+
+    #[test]
+    fn a_single_value_flag_given_twice_is_refused() {
+        let err = parse(&["send", "--subject", "a", "--subject", "b"])
+            .err()
+            .unwrap();
+        assert_eq!(err, "--subject is given twice");
     }
 }
