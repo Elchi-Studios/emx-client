@@ -80,7 +80,7 @@ Anything
   api GET|POST|PATCH|PUT|DELETE /api/... [--data JSON]
 
 Options for every command
-  --account A     a shared mailbox's id (default: your own)
+  --account A     a shared mailbox, by id or address (default: your own)
   --json          machine-readable output
   --version, --help
 
@@ -131,7 +131,16 @@ fn run(command: &str, a: &Args) -> Result<(), String> {
     let emx = Client::with_base_url(&cfg.base_url, &cfg.token)
         .map_err(|e| e.to_string())?
         .user_agent(&format!("emx-cli/{}", env!("CARGO_PKG_VERSION")));
-    let account = a.value("account").unwrap_or(ME);
+    let account = match a.value("account") {
+        // An address is looked up among the accounts the token reaches.
+        Some(want) if want.contains('@') => {
+            let me = emx.me().map_err(|e| describe(&e.into()))?;
+            account_id(&me, want)?
+        }
+        Some(want) => want.to_string(),
+        None => ME.to_string(),
+    };
+    let account = account.as_str();
     let json = a.switch("json");
     let rest: Vec<&str> = a.positional.iter().skip(1).map(|s| s.as_str()).collect();
     let r = match command {
@@ -185,6 +194,33 @@ fn local(e: impl std::fmt::Display) -> Fail {
 /// A local failure that names the file it concerns.
 fn file_err(path: &str, e: std::io::Error) -> Fail {
     Fail::Local(format!("{path}: {e}"))
+}
+
+/// The id of the account with the address `want`, from what `me` lists.
+fn account_id(me: &emx_sdk::Me, want: &str) -> Result<String, String> {
+    me.accounts
+        .iter()
+        .find(|acc| acc.address.eq_ignore_ascii_case(want.trim()))
+        .map(|acc| acc.id.clone())
+        .ok_or_else(|| format!("no account {want} for this token; emx me lists them"))
+}
+
+/// The address to send from when none is given: the person's own
+/// address if it is a primary one, else the first primary, else the
+/// first. With a shared mailbox there are several primaries, and the
+/// order the service lists them in must not decide.
+fn default_from(me: &emx_sdk::Me) -> Option<String> {
+    let own = me
+        .accounts
+        .iter()
+        .find(|acc| acc.rights.own)
+        .map(|acc| acc.address.as_str());
+    me.send_from
+        .iter()
+        .find(|s| s.primary && Some(s.address.as_str()) == own)
+        .or_else(|| me.send_from.iter().find(|s| s.primary))
+        .or(me.send_from.first())
+        .map(|s| s.address.clone())
 }
 
 fn describe(e: &Fail) -> String {
@@ -329,8 +365,11 @@ fn find_mailbox(emx: &Client, account: &str, want: &str) -> Result<Mailbox, Fail
 }
 
 fn list(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> {
-    let mailbox = find_mailbox(emx, account, a.value("mailbox").unwrap_or("inbox"))?;
     let limit = a.number("limit", 30).map_err(config_err)?;
+    if !(1..=200).contains(&limit) {
+        return Err(Fail::Local("--limit is a number from 1 to 200".into()));
+    }
+    let mailbox = find_mailbox(emx, account, a.value("mailbox").unwrap_or("inbox"))?;
     let page = emx.messages(account, &mailbox.id, limit, a.value("cursor").unwrap_or(""))?;
     if json {
         return out(&serde_json::json!({"messages": page.items, "cursor": page.cursor}));
@@ -358,7 +397,7 @@ fn print_messages(list: &[Message]) {
         };
         outln!(
             "{mark}{flag}{clip} {}  {:<24}  {}",
-            &m.received_at[..16].replace('T', " "),
+            when(&m.received_at),
             trim(&who, 24),
             trim(&m.subject, 60)
         );
@@ -383,7 +422,7 @@ fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Res
     if !m.cc.is_empty() {
         outln!("Cc:      {}", m.cc.join(", "));
     }
-    outln!("Date:    {}", m.received_at);
+    outln!("Date:    {}", when(&m.received_at));
     outln!("Subject: {}", m.subject);
     if full.body.sealed {
         outln!("\n[sealed: the body is encrypted to the mailbox's key and opens in the web client]");
@@ -402,7 +441,7 @@ fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Res
     if a.switch("html") && !full.body.html.is_empty() {
         outln!("{}", full.body.html);
     } else if !full.body.text.is_empty() {
-        outln!("{}", full.body.text);
+        outln!("{}", full.body.text.replace("\r\n", "\n"));
     } else if !full.body.html.is_empty() {
         outln!("{}", strip_tags(&full.body.html));
     }
@@ -513,15 +552,8 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
     }
     let from = match a.value("from") {
         Some(f) => f.to_string(),
-        None => {
-            let me = emx.me()?;
-            me.send_from
-                .iter()
-                .find(|s| s.primary)
-                .or(me.send_from.first())
-                .map(|s| s.address.clone())
-                .ok_or_else(|| usage("no address to send from; --from A"))?
-        }
+        None => default_from(&emx.me()?)
+            .ok_or_else(|| Fail::Local("no address to send from; pass --from A".into()))?,
     };
     let text = match (a.value("text"), a.value("body-file")) {
         (Some(t), _) => t.to_string(),
@@ -886,6 +918,20 @@ fn config_err(s: String) -> Fail {
     Fail::Local(s)
 }
 
+/// A timestamp from the service, as date and minute with its zone: the
+/// service sends UTC, and a time without a zone reads as local time.
+fn when(ts: &str) -> String {
+    let (Some(day), Some(minute)) = (ts.get(..10), ts.get(11..16)) else {
+        return ts.to_string();
+    };
+    let zone = if ts.ends_with('Z') || ts.ends_with("+00:00") {
+        "UTC"
+    } else {
+        ts.get(ts.len().saturating_sub(6)..).unwrap_or("")
+    };
+    format!("{day} {minute} {zone}")
+}
+
 fn trim(s: &str, n: usize) -> String {
     let s = s.replace(['\n', '\r'], " ");
     if s.chars().count() <= n {
@@ -1120,6 +1166,46 @@ mod tests {
             strip_tags(html),
             "Danke für die Offerte, wir sind dabei.\nGruss\nAnna"
         );
+    }
+
+    #[test]
+    fn times_carry_their_zone() {
+        assert_eq!(when("2026-09-24T06:12:40Z"), "2026-09-24 06:12 UTC");
+        assert_eq!(when("2026-09-24T06:12:40.123Z"), "2026-09-24 06:12 UTC");
+        assert_eq!(when("2026-09-24T08:12:40+02:00"), "2026-09-24 08:12 +02:00");
+        assert_eq!(when(""), "");
+        assert_eq!(when("soon"), "soon");
+    }
+
+    fn me_json(v: &str) -> emx_sdk::Me {
+        let v = v.replacen('{', r#"{"tenant":{"id":"t1"},"#, 1);
+        serde_json::from_str(&v).unwrap()
+    }
+
+    #[test]
+    fn accounts_by_address_and_the_default_sender() {
+        let me = me_json(
+            r#"{"id":"u1","name":"Samuel","accounts":[
+                {"id":"s1","address":"kontakt@elchi.test","rights":{"read":true}},
+                {"id":"u1","address":"samuel@elchi.test","rights":{"own":true}}],
+              "sendFrom":[{"address":"kontakt@elchi.test","primary":true},
+                {"address":"samuel@elchi.test","primary":true},
+                {"address":"s@elchi.test"}]}"#,
+        );
+        assert_eq!(account_id(&me, "Kontakt@Elchi.test").unwrap(), "s1");
+        assert!(account_id(&me, "nobody@elchi.test").is_err());
+        assert_eq!(default_from(&me).as_deref(), Some("samuel@elchi.test"));
+        let me = me_json(
+            r#"{"id":"u1","sendFrom":[{"address":"a@x.test"},{"address":"b@x.test","primary":true}]}"#,
+        );
+        assert_eq!(default_from(&me).as_deref(), Some("b@x.test"));
+        assert_eq!(default_from(&me_json(r#"{"id":"u1"}"#)), None);
+    }
+
+    #[test]
+    fn a_limit_outside_the_range_is_refused() {
+        let m = local_message(list(&offline(), ME, &args(&["list", "--limit", "0"]), false));
+        assert_eq!(m, "--limit is a number from 1 to 200");
     }
 
     #[test]

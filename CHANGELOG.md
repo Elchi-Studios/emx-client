@@ -39,6 +39,11 @@
 - The SDK's tests cover every call the command line and the desktop app
   make, and the scripted server answers a refused token with
   `bad_token`, the code the service sends.
+- `emx`: times show their zone (`2026-09-24 06:12 UTC`); `--account`
+  takes an address as well as an id; `--limit` outside 1 to 200 is
+  refused instead of quietly becoming 1 or 200; message text is printed
+  with plain line ends; and `send` without `--from` picks the person's
+  own address when a shared mailbox lists a primary address too.
 - The README examples compile, and are compiled with the doctests from
   now on. The SDK's README says how to depend on it.
 - The oldest Rust that builds the SDK and the command line is 1.85, as
