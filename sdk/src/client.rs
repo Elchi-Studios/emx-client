@@ -56,10 +56,7 @@ impl Client {
             ));
         }
         let base = base_url.trim().trim_end_matches('/').to_string();
-        if !base.starts_with("https://")
-            && !base.starts_with("http://localhost")
-            && !base.starts_with("http://127.0.0.1")
-        {
+        if !base.starts_with("https://") && !is_loopback_http(&base) {
             return Err(Error::Config(format!("the base URL must be https: {base}")));
         }
         let config = ureq::Agent::config_builder()
@@ -677,6 +674,34 @@ fn idempotency_key() -> String {
         *part = RandomState::new().hash_one((i, n, nanos, std::process::id()));
     }
     format!("emx-{:016x}{:016x}", parts[0], parts[1])
+}
+
+/// True for a plain-HTTP URL whose host is this computer: `localhost`,
+/// `127.0.0.1` or `[::1]`, with a port or without. The whole host is
+/// compared, so `http://localhost.example.ch` is not one of them: the
+/// token would cross the network in clear text.
+fn is_loopback_http(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') {
+        return false;
+    }
+    // The host, and what follows it: nothing, or a colon and the port.
+    let split = if authority.starts_with('[') {
+        authority.find(']').map(|i| i + 1)
+    } else {
+        Some(authority.find(':').unwrap_or(authority.len()))
+    };
+    let Some((host, port)) = split.map(|i| authority.split_at(i)) else {
+        return false;
+    };
+    let port_ok = match port.strip_prefix(':') {
+        Some(p) => !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()),
+        None => port.is_empty(),
+    };
+    port_ok && (host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "[::1]")
 }
 
 /// A path segment, percent-encoded.

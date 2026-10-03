@@ -32,6 +32,10 @@
   pause, with `retry_after`, where the client used to wait up to a
   minute without a word. A send may take as long as the service allows
   for it, two minutes.
+- A plain-HTTP base URL is accepted only when its host is exactly
+  `localhost`, `127.0.0.1` or `[::1]`. A host such as
+  `localhost.example.ch` used to pass the check, and the token went to
+  it in clear text.
 
 ## 0.1.0
 

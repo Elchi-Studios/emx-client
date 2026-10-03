@@ -208,6 +208,36 @@ fn bad_configuration_is_refused_early() {
 }
 
 #[test]
+fn plain_http_only_for_this_computer() {
+    for ok in [
+        "http://localhost",
+        "http://localhost:8494",
+        "http://LOCALHOST:8494/",
+        "http://127.0.0.1",
+        "http://127.0.0.1:8494",
+        "http://[::1]:8494",
+    ] {
+        assert!(Client::with_base_url(ok, "emx_x").is_ok(), "{ok}");
+    }
+    for refused in [
+        "http://localhost.example.ch:8494",
+        "http://127.0.0.1.example.ch",
+        "http://localhost@example.ch",
+        "http://localhost:80@example.ch",
+        "http://localhost:x",
+        "http://localhost:",
+        "http://[::1].example.ch",
+        "http://[::1",
+        "http://example.ch",
+    ] {
+        assert!(
+            matches!(Client::with_base_url(refused, "emx_x"), Err(Error::Config(_))),
+            "{refused}"
+        );
+    }
+}
+
+#[test]
 fn segments_are_encoded() {
     let (base, seen) = server(vec![(200, r#"{"contacts":[]}"#), (200, r#"{"ok":true}"#)]);
     let emx = Client::with_base_url(&base, "emx_test").unwrap();
