@@ -323,11 +323,16 @@ struct ChangeNotice {
 /// the modseq of each change. The window asks for the changes itself,
 /// from the modseq it last handled, so a notice that arrives while it is
 /// busy loses nothing. The stream is reopened when it ends, with a pause
-/// that grows while the service is unreachable.
+/// that grows while the service is unreachable. Every new stream starts
+/// by announcing the current modseq; the window hears of it only when it
+/// is above the last one passed on, which is when a change was missed
+/// while the stream was down.
 fn watch(app: AppHandle, client: Client, account: String, stop: Arc<std::sync::atomic::AtomicBool>) {
     std::thread::spawn(move || {
         let mut pause = 1u64;
+        let mut last = 0i64;
         while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            let opened = std::time::Instant::now();
             let stream = match client.events(&account) {
                 Ok(s) => s,
                 Err(e) => {
@@ -339,13 +344,13 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<std::sync::a
                     continue;
                 }
             };
-            pause = 1;
             for event in stream {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
                 match event {
-                    Ok(emx_sdk::Event::Change { modseq }) => {
+                    Ok(emx_sdk::Event::Change { modseq }) if modseq > last => {
+                        last = modseq;
                         let _ = app.emit(
                             "emx://change",
                             ChangeNotice {
@@ -357,6 +362,14 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<std::sync::a
                     Ok(_) => {}
                     Err(_) => break,
                 }
+            }
+            // A stream that keeps ending at once must not become a busy
+            // loop; one that lasted resets the pause.
+            if opened.elapsed() < std::time::Duration::from_secs(10) {
+                std::thread::sleep(std::time::Duration::from_secs(pause));
+                pause = (pause * 2).min(60);
+            } else {
+                pause = 1;
             }
         }
     });

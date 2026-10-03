@@ -19,9 +19,11 @@ cli                                                             ──▶  emx-s
 - `types.rs` is the records, with serde. Every optional field defaults,
   and unknown fields are ignored, because the service adds fields and
   never removes one.
-- `events.rs` reads the server-sent event stream as an iterator. The
-  service ends a stream after an hour; the caller opens another and asks
-  for changes since its last modseq, so nothing between is missed.
+- `events.rs` reads the server-sent event stream as an iterator, on a
+  thread of its own so that a stream silent for a minute (two lost
+  keepalives) ends with an error instead of hanging. The service ends a
+  stream after an hour; the caller opens another and asks for changes
+  since its last modseq, so nothing between is missed.
 - `webhook.rs` checks `X-EMX-Signature` with HMAC-SHA256 written in the
   crate, so a program that only receives webhooks needs nothing else.
 
@@ -33,8 +35,8 @@ what is left. `config.rs` is the token file, `0600` on Unix, under the
 system's config folder, overridden by `EMX_TOKEN` and `EMX_BASE_URL`.
 
 `watch` is the command a server runs: it follows the event stream,
-asks for changes, prints or hands them to a command, and reconnects
-with a growing pause when the service is away.
+asks for changes, prints or hands them to a command when there are any,
+and reconnects quietly, with a growing pause when the service is away.
 
 ## The desktop app
 

@@ -691,24 +691,38 @@ fn webhook(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> 
 
 // --- Live ----------------------------------------------------------------
 
-/// Follows the account: for every change event, asks what changed and
-/// prints it, or hands it to a command. Reconnects when the stream ends,
-/// and picks up from the last modseq, so nothing in between is missed.
+/// Follows the account: for every change, asks what changed and prints
+/// it, or hands it to a command. A batch with nothing in it prints
+/// nothing and runs nothing: the service announces its modseq on every
+/// connection, and that alone is not a change. When the stream ends or
+/// breaks, a new one is opened without a word and picks up from the last
+/// modseq, so nothing in between is missed; only a service that stays
+/// away is reported.
 fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> {
-    let mut modseq = emx
-        .mailboxes(account)?
-        .iter()
-        .map(|m| m.modseq)
-        .max()
-        .unwrap_or(0);
+    let mut modseq = current_modseq(emx, account)?;
     let exec = a.value("exec");
     if !json {
         eprintln!("watching {account} from modseq {modseq}; Ctrl-C ends it");
     }
     let mut backoff = 1u64;
     loop {
-        let stream = match emx.events(account) {
-            Ok(s) => s,
+        let opened = std::time::Instant::now();
+        match emx.events(account) {
+            Ok(stream) => {
+                for event in stream {
+                    match event {
+                        Ok(Event::Change { modseq: now }) if now > modseq => {}
+                        Ok(_) => continue,
+                        // Broken or silent: a new stream is opened below.
+                        Err(_) => break,
+                    }
+                    match catch_up(emx, account, &mut modseq, exec, json) {
+                        Ok(()) => {}
+                        Err(Fail::Emx(e)) if e.is_retryable() => break,
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
             Err(e) if e.is_retryable() => {
                 eprintln!("emx: {e}; trying again in {backoff}s");
                 std::thread::sleep(std::time::Duration::from_secs(backoff));
@@ -716,49 +730,66 @@ fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> 
                 continue;
             }
             Err(e) => return Err(e.into()),
+        }
+        // A stream that keeps ending at once must not turn this into a
+        // busy loop; one that lasted resets the pause.
+        if opened.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_secs(backoff));
+            backoff = (backoff * 2).min(60);
+        } else {
+            backoff = 1;
+        }
+    }
+}
+
+/// The highest modseq of an account's folders: where following starts.
+fn current_modseq(emx: &Client, account: &str) -> Result<i64, Fail> {
+    Ok(emx
+        .mailboxes(account)?
+        .iter()
+        .map(|m| m.modseq)
+        .max()
+        .unwrap_or(0))
+}
+
+/// Asks for everything after `modseq`, page by page, and prints or hands
+/// on each batch that has something in it.
+fn catch_up(
+    emx: &Client,
+    account: &str,
+    modseq: &mut i64,
+    exec: Option<&str>,
+    json: bool,
+) -> Result<(), Fail> {
+    loop {
+        let changes = match emx.changes(account, *modseq) {
+            Ok(c) => c,
+            Err(e) if e.code() == Some("reload") => {
+                // Too far behind for the service to say what changed:
+                // carry on from now.
+                *modseq = current_modseq(emx, account)?;
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
         };
-        backoff = 1;
-        for event in stream {
-            match event {
-                Ok(Event::Change { .. }) => {}
-                Ok(Event::Other { .. }) => continue,
-                Err(e) => {
-                    eprintln!("emx: {e}");
-                    break;
+        *modseq = changes.modseq;
+        if !changes.updated.is_empty() || !changes.destroyed.is_empty() {
+            if json {
+                outln!("{}", serde_json::to_string(&changes).map_err(local)?);
+            } else {
+                for m in &changes.updated {
+                    outln!("{} {}  {}  {}", m.modseq, m.id, m.from, trim(&m.subject, 60));
+                }
+                for id in &changes.destroyed {
+                    outln!("{} {}  gone", changes.modseq, id);
                 }
             }
-            loop {
-                let changes = match emx.changes(account, modseq) {
-                    Ok(c) => c,
-                    Err(e) if e.code() == Some("reload") => {
-                        modseq = emx
-                            .mailboxes(account)?
-                            .iter()
-                            .map(|m| m.modseq)
-                            .max()
-                            .unwrap_or(0);
-                        break;
-                    }
-                    Err(e) => return Err(e.into()),
-                };
-                modseq = changes.modseq;
-                if json {
-                    outln!("{}", serde_json::to_string(&changes).map_err(local)?);
-                } else {
-                    for m in &changes.updated {
-                        outln!("{} {}  {}  {}", m.modseq, m.id, m.from, trim(&m.subject, 60));
-                    }
-                    for id in &changes.destroyed {
-                        outln!("{} {}  gone", changes.modseq, id);
-                    }
-                }
-                if let Some(cmd) = exec {
-                    run_exec(cmd, &changes);
-                }
-                if !changes.has_more {
-                    break;
-                }
+            if let Some(cmd) = exec {
+                run_exec(cmd, &changes);
             }
+        }
+        if !changes.has_more {
+            return Ok(());
         }
     }
 }

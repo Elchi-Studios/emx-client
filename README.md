@@ -66,7 +66,7 @@ emx login                      # paste a token from Settings, Developer API
 emx list
 emx read <id>
 emx send --to anna@example.ch --subject "Offerte" --text "Gerne." --attach Offerte.pdf
-emx watch --exec 'notify-send "New mail"'
+emx watch --exec 'notify-send "EMX" "Something changed"'
 emx --json list | jq '.messages[].subject'
 ```
 

@@ -16,6 +16,14 @@
   mailbox name no longer pretends to be an HTTP 404 from the service.
 - `emx` ends quietly when the program reading its output stops early,
   as in `emx --json list | head -1`; it used to panic.
+- The event stream no longer ends after a minute: the SDK's limit for a
+  whole call cut it off. A stream now ends when the service ends it, or
+  with an error when it has been silent for a minute, past two
+  keepalives. `emx watch` reopens it without a word, and neither it nor
+  `--exec` reacts to a batch with nothing in it, so the README's
+  notification example no longer fires every minute. The desktop app
+  tells the window about a new stream only when something changed while
+  it was down.
 
 ## 0.1.0
 

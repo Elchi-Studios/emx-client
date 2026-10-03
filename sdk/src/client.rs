@@ -252,9 +252,20 @@ impl Client {
     /// A stream of change events for an account. See [`Events`].
     pub fn events(&self, account: &str) -> Result<Events, Error> {
         let url = format!("{}/api/accounts/{}/events", self.base, seg(account));
+        // The agent's limit for a whole call would cut the stream off after
+        // a minute. A stream gets limits for connecting and for the answer
+        // to begin instead; silence is noticed by `Events` from the missing
+        // keepalives, and the body's limit, above the hour the service
+        // keeps a stream, only bounds a connection that died unnoticed.
         let resp = self
             .agent
             .get(&url)
+            .config()
+            .timeout_global(None)
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(30)))
+            .timeout_recv_body(Some(Duration::from_secs(65 * 60)))
+            .build()
             .header("Authorization", &format!("Bearer {}", self.token))
             .header("Accept", "text/event-stream")
             .header("User-Agent", &self.user_agent)

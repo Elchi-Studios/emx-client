@@ -12,7 +12,7 @@ emx read <id>
 emx search offerte 2026
 emx send --to anna@example.ch --subject "Re: Offerte" --text "Gerne." --attach Offerte.pdf
 emx seen <ids...>; emx move <ids...> --to archive
-emx watch --exec 'notify-send "New mail"'
+emx watch --exec 'notify-send "EMX" "Something changed"'
 emx --json list | jq '.messages[].subject'
 ```
 
@@ -23,7 +23,11 @@ win over it, which is what a server uses.
 
 `emx watch` follows the account and prints every change; with `--exec`
 it runs a command for each batch, with the changes as JSON on its
-standard input. It reconnects on its own and picks up where it was.
+standard input. A change is anything that happened to a message, from
+any device, this one included: new mail, but also mail read, flagged,
+moved or deleted. It reconnects on its own, without a word, and picks
+up where it was; a batch with nothing in it is never printed or passed
+on.
 
 `emx api` reaches any call under `/api/`, for the administration calls
 and whatever the service adds next.
