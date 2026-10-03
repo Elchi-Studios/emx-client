@@ -5,6 +5,23 @@
 mod args;
 mod config;
 
+/// `println!` for standard output, through [`emit`].
+macro_rules! outln {
+    () => {
+        $crate::emit(format_args!("\n"))
+    };
+    ($($t:tt)*) => {
+        $crate::emit(format_args!("{}\n", format_args!($($t)*)))
+    };
+}
+
+/// `print!` for standard output, through [`emit`].
+macro_rules! outp {
+    ($($t:tt)*) => {
+        $crate::emit(format_args!($($t)*))
+    };
+}
+
 use args::Args;
 use emx_sdk::{Client, Draft, DraftAttachment, Error, Event, Mailbox, Message, ME};
 use std::io::{IsTerminal, Read, Write};
@@ -78,12 +95,12 @@ fn main() -> ExitCode {
         Err(e) => return fail(&e),
     };
     if args.switch("version") {
-        println!("emx {}", env!("CARGO_PKG_VERSION"));
+        outln!("emx {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     let command = args.positional.first().map(|s| s.as_str()).unwrap_or("");
     if command.is_empty() || args.switch("help") || command == "help" {
-        print!("{USAGE}");
+        outp!("{USAGE}");
         return ExitCode::SUCCESS;
     }
     match run(command, &args) {
@@ -102,7 +119,7 @@ fn run(command: &str, a: &Args) -> Result<(), String> {
         "login" => return login(a),
         "logout" => {
             config::remove()?;
-            println!("Signed out. The token itself is revoked under Settings, Developer API.");
+            outln!("Signed out. The token itself is revoked under Settings, Developer API.");
             return Ok(());
         }
         _ => {}
@@ -212,7 +229,7 @@ fn login(a: &Args) -> Result<(), String> {
     })?;
     cfg.token = token;
     let p = config::save(&cfg)?;
-    println!(
+    outln!(
         "Signed in as {} ({}). The token is in {}.",
         me.name,
         me.tenant.name,
@@ -252,7 +269,7 @@ fn me(emx: &Client, json: bool) -> Result<(), Fail> {
     if json {
         return out(&me);
     }
-    println!(
+    outln!(
         "{} <{}>",
         me.name,
         me.accounts
@@ -261,11 +278,11 @@ fn me(emx: &Client, json: bool) -> Result<(), Fail> {
             .map(|a| a.address.as_str())
             .unwrap_or("")
     );
-    println!("{} ({}), {}", me.tenant.name, me.tenant.plan, me.role);
+    outln!("{} ({}), {}", me.tenant.name, me.tenant.plan, me.role);
     if me.accounts.len() > 1 {
-        println!("\nAccounts");
+        outln!("\nAccounts");
         for acc in &me.accounts {
-            println!(
+            outln!(
                 "  {}  {}  {}{}",
                 acc.id,
                 acc.address,
@@ -274,9 +291,9 @@ fn me(emx: &Client, json: bool) -> Result<(), Fail> {
             );
         }
     }
-    println!("\nSend from");
+    outln!("\nSend from");
     for s in &me.send_from {
-        println!("  {}{}", s.address, if s.primary { " (primary)" } else { "" });
+        outln!("  {}{}", s.address, if s.primary { " (primary)" } else { "" });
     }
     Ok(())
 }
@@ -287,9 +304,9 @@ fn mailboxes(emx: &Client, account: &str, json: bool) -> Result<(), Fail> {
         return out(&list);
     }
     let width = list.iter().map(|m| m.name.len()).max().unwrap_or(4).max(4);
-    println!("{:<width$}   TOTAL  UNSEEN  ID", "NAME");
+    outln!("{:<width$}   TOTAL  UNSEEN  ID", "NAME");
     for m in &list {
-        println!("{:<width$}  {:>6}  {:>6}  {}", m.name, m.total, m.unseen, m.id);
+        outln!("{:<width$}  {:>6}  {:>6}  {}", m.name, m.total, m.unseen, m.id);
     }
     Ok(())
 }
@@ -315,14 +332,14 @@ fn list(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> {
     }
     print_messages(&page.items);
     if !page.cursor.is_empty() {
-        println!("\nmore: --cursor {}", page.cursor);
+        outln!("\nmore: --cursor {}", page.cursor);
     }
     Ok(())
 }
 
 fn print_messages(list: &[Message]) {
     if list.is_empty() {
-        println!("nothing here");
+        outln!("nothing here");
         return;
     }
     for m in list {
@@ -334,13 +351,13 @@ fn print_messages(list: &[Message]) {
         } else {
             m.from.name.clone()
         };
-        println!(
+        outln!(
             "{mark}{flag}{clip} {}  {:<24}  {}",
             &m.received_at[..16].replace('T', " "),
             trim(&who, 24),
             trim(&m.subject, 60)
         );
-        println!("    {}", m.id);
+        outln!("    {}", m.id);
     }
 }
 
@@ -348,7 +365,7 @@ fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Res
     let id = rest.first().ok_or_else(|| usage("read <id>"))?;
     if a.switch("raw") {
         let raw = emx.raw(account, id)?;
-        std::io::stdout().write_all(&raw).map_err(local)?;
+        emit_bytes(&raw);
         return Ok(());
     }
     let full = emx.message(account, id)?;
@@ -356,30 +373,33 @@ fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Res
         return out(&full);
     }
     let m = &full.message;
-    println!("From:    {}", m.from);
-    println!("To:      {}", m.to.join(", "));
+    outln!("From:    {}", m.from);
+    outln!("To:      {}", m.to.join(", "));
     if !m.cc.is_empty() {
-        println!("Cc:      {}", m.cc.join(", "));
+        outln!("Cc:      {}", m.cc.join(", "));
     }
-    println!("Date:    {}", m.received_at);
-    println!("Subject: {}", m.subject);
+    outln!("Date:    {}", m.received_at);
+    outln!("Subject: {}", m.subject);
     if full.body.sealed {
-        println!("\n[sealed: the body is encrypted to the mailbox's key and opens in the web client]");
+        outln!("\n[sealed: the body is encrypted to the mailbox's key and opens in the web client]");
         return Ok(());
     }
     for at in &full.body.attachments {
-        println!(
+        outln!(
             "Part:    {}  {}  {} ({} bytes)",
-            at.part, at.filename, at.content_type, at.size
+            at.part,
+            at.filename,
+            at.content_type,
+            at.size
         );
     }
-    println!();
+    outln!();
     if a.switch("html") && !full.body.html.is_empty() {
-        println!("{}", full.body.html);
+        outln!("{}", full.body.html);
     } else if !full.body.text.is_empty() {
-        println!("{}", full.body.text);
+        outln!("{}", full.body.text);
     } else if !full.body.html.is_empty() {
-        println!("{}", strip_tags(&full.body.html));
+        outln!("{}", strip_tags(&full.body.html));
     }
     Ok(())
 }
@@ -397,7 +417,7 @@ fn part(emx: &Client, account: &str, rest: &[&str], a: &Args) -> Result<(), Fail
             std::fs::write(path, &data).map_err(|e| file_err(path, e))?;
             eprintln!("{} bytes of {kind} written to {path}", data.len());
         }
-        None => std::io::stdout().write_all(&data).map_err(local)?,
+        None => emit_bytes(&data),
     }
     Ok(())
 }
@@ -474,7 +494,7 @@ fn done(changed: &[String], json: bool) -> Result<(), Fail> {
     if json {
         return out(&serde_json::json!({"changed": changed}));
     }
-    println!("{} changed", changed.len());
+    outln!("{} changed", changed.len());
     Ok(())
 }
 
@@ -547,7 +567,7 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
     if json {
         return out(&sent);
     }
-    println!(
+    outln!(
         "sent to {} recipient{}",
         sent.recipients,
         if sent.recipients == 1 { "" } else { "s" }
@@ -563,7 +583,7 @@ fn contacts(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fai
         return out(&list);
     }
     for c in &list {
-        println!("{:<9} {}  {}", c.state, c.address, c.name);
+        outln!("{:<9} {}  {}", c.state, c.address, c.name);
     }
     Ok(())
 }
@@ -571,14 +591,14 @@ fn contacts(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fai
 fn contact(emx: &Client, account: &str, rest: &[&str], state: &str, a: &Args) -> Result<(), Fail> {
     let address = rest.first().ok_or_else(|| usage("<address>"))?;
     emx.set_contact(account, address, state, a.value("name").unwrap_or(""))?;
-    println!("{address} {state}");
+    outln!("{address} {state}");
     Ok(())
 }
 
 fn forget(emx: &Client, account: &str, rest: &[&str]) -> Result<(), Fail> {
     let address = rest.first().ok_or_else(|| usage("forget <address>"))?;
     emx.remove_contact(account, address)?;
-    println!("{address} forgotten");
+    outln!("{address} forgotten");
     Ok(())
 }
 
@@ -590,7 +610,7 @@ fn webhooks(emx: &Client, json: bool) -> Result<(), Fail> {
         return out(&serde_json::json!({"webhooks": hooks, "events": events}));
     }
     if hooks.is_empty() {
-        println!("no webhooks; events there are: {}", events.join(", "));
+        outln!("no webhooks; events there are: {}", events.join(", "));
         return Ok(());
     }
     for h in &hooks {
@@ -599,7 +619,7 @@ fn webhooks(emx: &Client, json: bool) -> Result<(), Fail> {
         } else {
             "on".into()
         };
-        println!(
+        outln!(
             "{}  {}  [{}]  {}  {}",
             h.id,
             h.url,
@@ -627,19 +647,19 @@ fn webhook(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> 
             if json {
                 return out(&made);
             }
-            println!("{}\nsecret (shown once): {}", made.webhook.id, made.secret);
+            outln!("{}\nsecret (shown once): {}", made.webhook.id, made.secret);
         }
         "delete" => {
             emx.delete_webhook(id.ok_or_else(|| usage("webhook delete <id>"))?)?;
-            println!("deleted");
+            outln!("deleted");
         }
         "test" => {
             emx.test_webhook(id.ok_or_else(|| usage("webhook test <id>"))?)?;
-            println!("a ping is on its way");
+            outln!("a ping is on its way");
         }
         "enable" => {
             emx.enable_webhook(id.ok_or_else(|| usage("webhook enable <id>"))?)?;
-            println!("on again");
+            outln!("on again");
         }
         "deliveries" => {
             let list = emx.webhook_deliveries(id.ok_or_else(|| usage("webhook deliveries <id>"))?, 50)?;
@@ -654,9 +674,13 @@ fn webhook(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> 
                 } else {
                     format!("pending, next {}", d.next_at.clone().unwrap_or_default())
                 };
-                println!(
+                outln!(
                     "{}  {}  {}  attempts {}  {}",
-                    d.created_at, d.event, d.last_status, d.attempts, state
+                    d.created_at,
+                    d.event,
+                    d.last_status,
+                    d.attempts,
+                    state
                 );
             }
         }
@@ -719,13 +743,13 @@ fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> 
                 };
                 modseq = changes.modseq;
                 if json {
-                    println!("{}", serde_json::to_string(&changes).map_err(local)?);
+                    outln!("{}", serde_json::to_string(&changes).map_err(local)?);
                 } else {
                     for m in &changes.updated {
-                        println!("{} {}  {}  {}", m.modseq, m.id, m.from, trim(&m.subject, 60));
+                        outln!("{} {}  {}  {}", m.modseq, m.id, m.from, trim(&m.subject, 60));
                     }
                     for id in &changes.destroyed {
-                        println!("{} {}  gone", changes.modseq, id);
+                        outln!("{} {}  gone", changes.modseq, id);
                     }
                 }
                 if let Some(cmd) = exec {
@@ -782,15 +806,40 @@ fn api(emx: &Client, rest: &[&str], a: &Args) -> Result<(), Fail> {
         };
         emx.call_json(&method, path, &body)?
     };
-    println!("{}", serde_json::to_string_pretty(&v).map_err(local)?);
+    outln!("{}", serde_json::to_string_pretty(&v).map_err(local)?);
     Ok(())
 }
 
 // --- Helpers -------------------------------------------------------------
 
 fn out<T: serde::Serialize>(v: &T) -> Result<(), Fail> {
-    println!("{}", serde_json::to_string_pretty(v).map_err(local)?);
+    outln!("{}", serde_json::to_string_pretty(v).map_err(local)?);
     Ok(())
+}
+
+/// Writes to standard output. When the reader has gone away, as with
+/// `emx --json list | head -1`, the program ends quietly and successfully,
+/// the way other command-line tools do, where `println!` would panic.
+fn emit(args: std::fmt::Arguments<'_>) {
+    if let Err(e) = std::io::stdout().lock().write_fmt(args) {
+        output_failed(e);
+    }
+}
+
+/// [`emit`] for bytes: a raw message or an attachment.
+fn emit_bytes(data: &[u8]) {
+    let mut out = std::io::stdout().lock();
+    if let Err(e) = out.write_all(data).and_then(|_| out.flush()) {
+        output_failed(e);
+    }
+}
+
+fn output_failed(e: std::io::Error) -> ! {
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        std::process::exit(0);
+    }
+    eprintln!("emx: writing the output: {e}");
+    std::process::exit(1);
 }
 
 fn usage(s: &str) -> Fail {

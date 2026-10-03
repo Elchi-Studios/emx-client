@@ -14,6 +14,8 @@
   and bad JSON in `emx api --data` as such; both used to read as
   "could not reach EMX" or "unexpected answer from EMX". An unknown
   mailbox name no longer pretends to be an HTTP 404 from the service.
+- `emx` ends quietly when the program reading its output stops early,
+  as in `emx --json list | head -1`; it used to panic.
 
 ## 0.1.0
 
