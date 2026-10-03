@@ -496,8 +496,8 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Error> {
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.clone());
         attachments.push(DraftAttachment {
+            content_type: content_type(&filename).to_string(),
             filename,
-            content_type: String::new(),
             data: base64(&data),
             content_id: String::new(),
         });
@@ -847,6 +847,54 @@ fn strip_tags(html: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
+/// The media type of an attachment, from its file name's extension. The
+/// service keeps what it is given, and an attachment without a type
+/// arrives as application/octet-stream, which a mail app will not open
+/// or preview. The table covers what people attach to business mail.
+fn content_type(filename: &str) -> &'static str {
+    let ext = match filename.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => ext.to_ascii_lowercase(),
+        _ => return "application/octet-stream",
+    };
+    match ext.as_str() {
+        "pdf" => "application/pdf",
+        "txt" | "text" | "log" => "text/plain",
+        "md" => "text/markdown",
+        "csv" => "text/csv",
+        "html" | "htm" => "text/html",
+        "ics" => "text/calendar",
+        "vcf" => "text/vcard",
+        "eml" => "message/rfc822",
+        "json" => "application/json",
+        "xml" => "application/xml",
+        "rtf" => "application/rtf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "heic" => "image/heic",
+        "tif" | "tiff" => "image/tiff",
+        "zip" => "application/zip",
+        "gz" | "tgz" => "application/gzip",
+        "7z" => "application/x-7z-compressed",
+        "doc" => "application/msword",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" => "application/vnd.ms-excel",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "mp4" => "video/mp4",
+        "mov" => "video/quicktime",
+        _ => "application/octet-stream",
+    }
+}
+
 fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -881,6 +929,20 @@ mod tests {
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn attachments_get_a_type_from_their_extension() {
+        assert_eq!(content_type("Offerte.pdf"), "application/pdf");
+        assert_eq!(content_type("Logo.PNG"), "image/png");
+        assert_eq!(content_type("Belege 2026.tar.gz"), "application/gzip");
+        assert_eq!(
+            content_type("Budget.xlsx"),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        assert_eq!(content_type("README"), "application/octet-stream");
+        assert_eq!(content_type(".profile"), "application/octet-stream");
+        assert_eq!(content_type("data.unknownext"), "application/octet-stream");
     }
 
     #[test]

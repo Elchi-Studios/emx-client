@@ -7,6 +7,9 @@
   twice is now refused instead of the last value winning.
 - `emx read <id> --html` works as the help says; it used to answer
   "--html needs a value", because only `send --html` takes one.
+- `emx send --attach` gives each file a media type from its extension,
+  so a PDF arrives as application/pdf instead of
+  application/octet-stream.
 
 ## 0.1.0
 
