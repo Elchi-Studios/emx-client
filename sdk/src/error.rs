@@ -41,10 +41,18 @@ impl Error {
         matches!(self, Error::Api { status: 404, .. })
     }
 
-    /// True when the call may be repeated as it was after a pause.
+    /// True when the call may be repeated as it was after a pause: the
+    /// connection failed, the per-minute rate limit was reached, or the
+    /// service had a passing problem. Not for the daily and monthly
+    /// sending limits, which last until the day or month is over, and
+    /// not for `unavailable`, which means the service at the base URL
+    /// does not offer the call at all.
     pub fn is_retryable(&self) -> bool {
         match self {
-            Error::Api { status, .. } => *status == 429 || *status >= 500,
+            Error::Api {
+                status: 429, code, ..
+            } => code != "daily_limit" && code != "monthly_limit",
+            Error::Api { status, code, .. } => *status >= 500 && *status != 501 && code != "unavailable",
             Error::Transport(_) => true,
             _ => false,
         }

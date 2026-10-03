@@ -4,6 +4,16 @@ use crate::types::*;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
+/// The longest pause the client waits out by itself before trying a
+/// refused call again. A longer one is the caller's to decide on: the
+/// error carries it as `retry_after`.
+const MAX_WAIT: Duration = Duration::from_secs(5);
+
+/// How long a send may take. The service gives the submission two
+/// minutes; a client that gave up earlier would leave the person not
+/// knowing whether the message went.
+const SEND_TIMEOUT: Duration = Duration::from_secs(150);
+
 /// The API, reached with one token.
 ///
 /// A token acts as the person who made it, within its scopes. Every mail
@@ -315,8 +325,21 @@ impl Client {
 
     /// Sends a message. It is signed, filed in Sent and delivered, the same
     /// path a mail app takes. `from` must be one of [`Me::send_from`].
+    ///
+    /// The call carries a fresh `Idempotency-Key`, the same on each of its
+    /// own attempts, so a send that is tried again after a refusal can
+    /// never go out twice.
     pub fn send_mail(&self, draft: &Draft) -> Result<Sent, Error> {
-        self.send("POST", "/api/send", draft)
+        self.send_mail_with_key(draft, &idempotency_key())
+    }
+
+    /// [`send_mail`](Client::send_mail) with a key chosen by the caller.
+    /// The service answers the same key from the same person within a day
+    /// with the first answer instead of sending again, so a program that
+    /// repeats a send itself, after a lost connection or a restart, passes
+    /// the key it used the first time. At most 200 characters.
+    pub fn send_mail_with_key(&self, draft: &Draft, key: &str) -> Result<Sent, Error> {
+        self.send_with("POST", "/api/send", draft, Some(key), Some(SEND_TIMEOUT))
     }
 
     // --- Webhooks ---------------------------------------------------------
@@ -419,16 +442,35 @@ impl Client {
         path: &str,
         body: &B,
     ) -> Result<T, Error> {
+        self.send_with(method, path, body, None, None)
+    }
+
+    /// A call with a JSON body, with an `Idempotency-Key` and a limit of
+    /// its own when given.
+    fn send_with<B: serde::Serialize, T: DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        body: &B,
+        key: Option<&str>,
+        timeout: Option<Duration>,
+    ) -> Result<T, Error> {
         let url = self.url(path, &[]);
         let raw = serde_json::to_string(body)?;
         let resp = self.with_retry(|| {
-            let req = match method {
+            let mut req = match method {
                 "POST" => self.agent.post(&url),
                 "PATCH" => self.agent.patch(&url),
                 "PUT" => self.agent.put(&url),
                 "DELETE" => self.agent.delete(&url).force_send_body(),
                 _ => self.agent.post(&url),
             };
+            if let Some(t) = timeout {
+                req = req.config().timeout_global(Some(t)).build();
+            }
+            if let Some(k) = key {
+                req = req.header("Idempotency-Key", k);
+            }
             req.header("Authorization", &format!("Bearer {}", self.token))
                 .header("Accept", "application/json")
                 .header("Content-Type", "application/json")
@@ -469,9 +511,15 @@ impl Client {
         Ok((data, kind))
     }
 
-    /// Runs a request, and once more after a pause when the service asked
-    /// for one (429) or was unavailable (503), since every call here is
-    /// safe to repeat.
+    /// Runs a request, and up to twice more after a pause when the refusal
+    /// is one that passes: the per-minute rate limit, or a service that is
+    /// briefly unavailable (see [`Error::is_retryable`]). Such a request
+    /// was refused before it did anything, and a send carries an
+    /// `Idempotency-Key` besides, so repeating it cannot do a thing twice.
+    /// Any other refusal, a daily sending limit for one, would answer the
+    /// same again and is returned at once, and so is a pause longer than
+    /// [`MAX_WAIT`]: the error carries it as `retry_after` and the caller
+    /// decides whether to wait, instead of hanging without a word.
     fn with_retry<F>(&self, mut f: F) -> Result<ureq::http::Response<ureq::Body>, Error>
     where
         F: FnMut() -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
@@ -481,18 +529,18 @@ impl Client {
             tries += 1;
             let resp = f().map_err(|e| Error::Transport(e.to_string()))?;
             let status = resp.status().as_u16();
-            if (status == 429 || status == 503) && tries < 3 {
-                let wait = resp
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(2)
-                    .min(30);
-                std::thread::sleep(Duration::from_secs(wait.max(1)));
-                continue;
+            if status != 429 && status != 503 {
+                return Ok(resp);
             }
-            return Ok(resp);
+            let err = self.refusal(resp);
+            let wait = match &err {
+                Error::Api { retry_after, .. } => Duration::from_secs(retry_after.unwrap_or(2).max(1)),
+                _ => MAX_WAIT,
+            };
+            if tries >= 3 || !err.is_retryable() || wait > MAX_WAIT {
+                return Err(err);
+            }
+            std::thread::sleep(wait);
         }
     }
 
@@ -609,6 +657,26 @@ struct WebhookList {
     webhooks: Vec<Webhook>,
     #[serde(default)]
     events: Vec<String>,
+}
+
+/// A key no other send of this person will use: 128 bits from the
+/// randomly seeded hasher of the standard library, with the time and a
+/// counter folded in so that two keys made in one instant still differ.
+fn idempotency_key() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::BuildHasher;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut parts = [0u64; 2];
+    for (i, part) in parts.iter_mut().enumerate() {
+        *part = RandomState::new().hash_one((i, n, nanos, std::process::id()));
+    }
+    format!("emx-{:016x}{:016x}", parts[0], parts[1])
 }
 
 /// A path segment, percent-encoded.

@@ -196,6 +196,11 @@ fn describe(e: &Fail) -> String {
         Fail::Emx(Error::Api { code, message, .. }) if code == "reload" => {
             format!("{message}; run the command again")
         }
+        Fail::Emx(
+            e @ Error::Api {
+                retry_after: Some(s), ..
+            },
+        ) if e.is_retryable() => format!("{e}; try again in {s} seconds"),
         Fail::Emx(e) => e.to_string(),
     }
 }

@@ -24,6 +24,14 @@
   notification example no longer fires every minute. The desktop app
   tells the window about a new stream only when something changed while
   it was down.
+- Every send carries an `Idempotency-Key`, the same on each attempt, and
+  `Client::send_mail_with_key` lets a program choose it. Only refusals
+  that pass (the per-minute rate limit, a service briefly unavailable)
+  are tried again, and only after a pause of a few seconds; the daily
+  and monthly sending limits are returned at once, and so is a longer
+  pause, with `retry_after`, where the client used to wait up to a
+  minute without a word. A send may take as long as the service allows
+  for it, two minutes.
 
 ## 0.1.0
 

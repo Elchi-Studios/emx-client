@@ -10,12 +10,30 @@ struct Seen {
     method: String,
     path: String,
     auth: String,
+    idempotency_key: String,
     body: String,
 }
 
 /// Starts a server that answers each request with the next scripted
-/// (status, body) pair and remembers what it saw.
+/// (status, body) pair and remembers what it saw. A 429 says
+/// `Retry-After: 1`.
 fn server(answers: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<Vec<Seen>>>) {
+    server_with(
+        answers
+            .into_iter()
+            .map(|(status, body)| {
+                (
+                    status,
+                    body,
+                    if status == 429 { "Retry-After: 1\r\n" } else { "" },
+                )
+            })
+            .collect(),
+    )
+}
+
+/// [`server`] with the extra header lines of each answer given.
+fn server_with(answers: Vec<(u16, &'static str, &'static str)>) -> (String, Arc<Mutex<Vec<Seen>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -31,6 +49,7 @@ fn server(answers: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<Vec<Seen>>>) 
             let method = parts.next().unwrap_or("").to_string();
             let path = parts.next().unwrap_or("").to_string();
             let mut auth = String::new();
+            let mut idempotency_key = String::new();
             let mut length = 0usize;
             loop {
                 line.clear();
@@ -42,6 +61,9 @@ fn server(answers: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<Vec<Seen>>>) 
                 let lower = l.to_ascii_lowercase();
                 if let Some(v) = lower.strip_prefix("authorization:") {
                     auth = v.trim().to_string();
+                }
+                if lower.starts_with("idempotency-key:") {
+                    idempotency_key = l["idempotency-key:".len()..].trim().to_string();
                 }
                 if let Some(v) = lower.strip_prefix("content-length:") {
                     length = v.trim().parse().unwrap_or(0);
@@ -55,12 +77,12 @@ fn server(answers: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<Vec<Seen>>>) 
                 method,
                 path,
                 auth,
+                idempotency_key,
                 body: String::from_utf8_lossy(&body).into(),
             });
-            let Some((status, answer)) = answers.next() else {
+            let Some((status, answer, extra)) = answers.next() else {
                 break;
             };
-            let extra = if status == 429 { "Retry-After: 1\r\n" } else { "" };
             let _ = write!(
                 stream,
                 "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{answer}",
@@ -195,4 +217,95 @@ fn segments_are_encoded() {
     assert_eq!(seen[0].path, "/api/accounts/me/contacts?state=approved");
     assert_eq!(seen[1].method, "DELETE");
     assert_eq!(seen[1].path, "/api/accounts/me/contacts/a%20b%40example.ch");
+}
+
+const SENT: &str = r#"{"sent":true,"recipients":1}"#;
+
+fn draft() -> Draft {
+    Draft {
+        from: "samuel@elchi.dev".into(),
+        to: "anna@example.ch".into(),
+        subject: "Offerte".into(),
+        text: "Gerne.".into(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn a_send_carries_one_idempotency_key_over_its_attempts() {
+    let (base, seen) = server(vec![
+        (
+            503,
+            r#"{"error":{"code":"try_later","message":"try again later"}}"#,
+        ),
+        (200, SENT),
+        (200, SENT),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    emx.send_mail(&draft()).unwrap();
+    emx.send_mail(&draft()).unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 3);
+    assert!(seen[0].idempotency_key.len() > 20, "{}", seen[0].idempotency_key);
+    assert_eq!(
+        seen[0].idempotency_key, seen[1].idempotency_key,
+        "a retry keeps the key"
+    );
+    assert_ne!(
+        seen[1].idempotency_key, seen[2].idempotency_key,
+        "a new send gets a new key"
+    );
+}
+
+#[test]
+fn a_send_with_a_given_key_uses_it() {
+    let (base, seen) = server(vec![(200, SENT)]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    emx.send_mail_with_key(&draft(), "invoice-2026-117").unwrap();
+    assert_eq!(seen.lock().unwrap()[0].idempotency_key, "invoice-2026-117");
+}
+
+#[test]
+fn lasting_refusals_are_not_retried() {
+    let (base, seen) = server_with(vec![
+        (
+            429,
+            r#"{"error":{"code":"daily_limit","message":"the daily limit is reached"}}"#,
+            "",
+        ),
+        (
+            503,
+            r#"{"error":{"code":"unavailable","message":"sending is not configured"}}"#,
+            "",
+        ),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let err = emx.send_mail(&draft()).unwrap_err();
+    assert_eq!(err.code(), Some("daily_limit"));
+    assert!(!err.is_retryable());
+    let err = emx.send_mail(&draft()).unwrap_err();
+    assert_eq!(err.code(), Some("unavailable"));
+    assert_eq!(seen.lock().unwrap().len(), 2, "one request each");
+}
+
+#[test]
+fn a_long_pause_is_left_to_the_caller() {
+    let (base, seen) = server_with(vec![(
+        429,
+        r#"{"error":{"code":"rate_limited","message":"at most 600 requests per minute per token"}}"#,
+        "Retry-After: 60\r\n",
+    )]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let started = std::time::Instant::now();
+    let err = emx.me().unwrap_err();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(err.is_retryable());
+    assert!(matches!(
+        err,
+        Error::Api {
+            retry_after: Some(60),
+            ..
+        }
+    ));
+    assert_eq!(seen.lock().unwrap().len(), 1);
 }

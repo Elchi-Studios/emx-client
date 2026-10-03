@@ -13,9 +13,14 @@ cli                                                             ──▶  emx-s
 - `client.rs` is the calls. One `Client` holds the base URL, the token and
   a `ureq` agent; it is `Clone`, `Send` and `Sync`. Each call builds one
   request, sends it, and either decodes the answer or turns a refusal
-  into `Error::Api` with the API's own code and message. A 429 or a 503
-  is retried once after the pause the service asks for, because every
-  call is safe to repeat.
+  into `Error::Api` with the API's own code and message. A refusal that
+  passes (the per-minute rate limit, a service briefly unavailable) is
+  tried up to twice more after the pause the service asks for, when
+  that pause is a few seconds; a longer one is returned with the error
+  for the caller to decide. Such a refusal comes before the call did
+  anything, and a send carries an `Idempotency-Key`, the same on every
+  attempt, so a repeat cannot send twice. Lasting refusals such as the
+  daily sending limit are returned at once.
 - `types.rs` is the records, with serde. Every optional field defaults,
   and unknown fields are ignored, because the service adds fields and
   never removes one.
