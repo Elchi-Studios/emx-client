@@ -36,6 +36,9 @@
   `localhost`, `127.0.0.1` or `[::1]`. A host such as
   `localhost.example.ch` used to pass the check, and the token went to
   it in clear text.
+- The SDK's tests cover every call the command line and the desktop app
+  make, and the scripted server answers a refused token with
+  `bad_token`, the code the service sends.
 
 ## 0.1.0
 

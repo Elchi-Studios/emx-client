@@ -65,7 +65,12 @@ and reconnects quietly, with a growing pause when the service is away.
 
 The SDK's tests run against a small HTTP server inside the test that
 answers scripted responses and records the requests, so a test asserts
-both what was sent and how the answer was read. The webhook module is
-tested against the RFC 4231 and FIPS 180-4 vectors. The command line's
-own logic (arguments, base64, HTML to text) has unit tests; the rest is
-exercised by hand against a running service.
+both what was sent and how the answer was read. Every call the command
+line and the desktop app make is covered, with answers and error codes
+as the service sends them; `create_mailbox` and `set_prefs` are not
+yet. The webhook module is tested against the RFC 4231 and FIPS 180-4
+vectors. The command line's own logic (arguments, base64, HTML to
+text, media types) has unit tests, and `cli/tests` runs the binary
+against a scripted server for what only shows as a whole: `watch` and
+the output pipe. Nothing here runs against a live service; the rest
+is exercised by hand against one.

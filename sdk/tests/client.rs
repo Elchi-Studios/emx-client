@@ -1,7 +1,10 @@
 //! The client against a small server in the test itself, which answers
-//! the way the service documents and records what it was asked.
+//! the way the service documents and records what it was asked. Every
+//! call the command line and the desktop app make is here; the answers
+//! follow the API reference and the service's own handlers, error codes
+//! included.
 
-use emx_sdk::{Client, Draft, Error, ME};
+use emx_sdk::{Client, Draft, Error, Event, ME};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -83,9 +86,15 @@ fn server_with(answers: Vec<(u16, &'static str, &'static str)>) -> (String, Arc<
             let Some((status, answer, extra)) = answers.next() else {
                 break;
             };
+            // JSON unless the answer names its own type.
+            let kind = if extra.contains("Content-Type:") {
+                ""
+            } else {
+                "Content-Type: application/json\r\n"
+            };
             let _ = write!(
                 stream,
-                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{answer}",
+                "HTTP/1.1 {status} X\r\n{kind}Content-Length: {}\r\n{extra}Connection: close\r\n\r\n{answer}",
                 answer.len()
             );
         }
@@ -171,15 +180,15 @@ fn refusals_become_errors() {
     let (base, _) = server(vec![
         (
             401,
-            r#"{"error":{"code":"unauthorized","message":"the token is not valid","requestId":"r1"}}"#,
+            r#"{"error":{"code":"bad_token","message":"the token is not valid","requestId":"r1","docs":"https://docs.elchi.dev/emx-errors#bad-token"}}"#,
         ),
         (404, "not json at all"),
     ]);
     let emx = Client::with_base_url(&base, "emx_bad").unwrap();
     let err = emx.me().unwrap_err();
     assert!(err.is_unauthorized());
-    assert_eq!(err.code(), Some("unauthorized"));
-    assert_eq!(err.to_string(), "the token is not valid (unauthorized, HTTP 401)");
+    assert_eq!(err.code(), Some("bad_token"));
+    assert_eq!(err.to_string(), "the token is not valid (bad_token, HTTP 401)");
     let err = emx.mailboxes(ME).unwrap_err();
     assert!(err.is_not_found());
     assert_eq!(err.code(), Some("not_found"));
@@ -338,4 +347,215 @@ fn a_long_pause_is_left_to_the_caller() {
         }
     ));
     assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+const MESSAGE: &str = r#"{"id":"x1","mailboxId":"m1","threadId":"t1","receivedAt":"2026-09-24T07:41:12Z","subject":"Offerte","from":{"name":"Anna","address":"anna@example.ch"},"to":["samuel@elchi.dev"],"snippet":"Danke","hasAttachments":true,"keywords":["$seen"],"size":48213,"modseq":811}"#;
+
+#[test]
+fn reading_messages() {
+    let full = r#"{"message":{"id":"x1","mailboxId":"m1","threadId":"t1","receivedAt":"2026-09-24T07:41:12Z","subject":"Offerte","from":{"name":"Anna","address":"anna@example.ch"},"to":["samuel@elchi.dev"],"modseq":811},
+      "body":{"text":"Danke.","html":"<p>Danke.</p>","remoteImages":1,"attachments":[{"part":"2","filename":"Offerte.pdf","contentType":"application/pdf","size":300000}],
+      "replyTo":[],"messageId":"<a@example.ch>","inReplyTo":"","references":[]}}"#;
+    let list = Box::leak(format!(r#"{{"messages":[{MESSAGE}]}}"#).into_boxed_str());
+    let (base, seen) = server_with(vec![
+        (200, full, ""),
+        (
+            200,
+            "Subject: Offerte\r\n\r\nDanke.\r\n",
+            "Content-Type: message/rfc822\r\n",
+        ),
+        (200, "%PDF-1.7", "Content-Type: application/pdf\r\n"),
+        (200, list, ""),
+        (200, list, ""),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let m = emx.message(ME, "x1").unwrap();
+    assert_eq!(m.message.subject, "Offerte");
+    assert_eq!(m.body.attachments[0].part, "2");
+    assert_eq!(m.body.attachments[0].content_type, "application/pdf");
+    assert_eq!(m.body.message_id, "<a@example.ch>");
+    assert_eq!(emx.raw(ME, "x1").unwrap(), b"Subject: Offerte\r\n\r\nDanke.\r\n");
+    let (data, kind) = emx.part(ME, "x1", "2").unwrap();
+    assert_eq!(
+        (data.as_slice(), kind.as_str()),
+        (&b"%PDF-1.7"[..], "application/pdf")
+    );
+    assert_eq!(emx.thread(ME, "t1").unwrap()[0].id, "x1");
+    assert_eq!(emx.search(ME, "offerte 2026").unwrap()[0].id, "x1");
+    let seen = seen.lock().unwrap();
+    let paths: Vec<&str> = seen.iter().map(|s| s.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/api/accounts/me/messages/x1",
+            "/api/accounts/me/messages/x1/raw",
+            "/api/accounts/me/messages/x1/parts/2",
+            "/api/accounts/me/threads/t1",
+            "/api/accounts/me/search?q=offerte%202026",
+        ]
+    );
+}
+
+#[test]
+fn changing_messages() {
+    let (base, seen) = server(vec![
+        (200, r#"{"changed":["x1"]}"#),
+        (200, r#"{"changed":["x1","x2"]}"#),
+        (200, r#"{"changed":["x1"]}"#),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    assert_eq!(emx.keywords(ME, &["x1"], &["$flagged"], &[]).unwrap(), vec!["x1"]);
+    assert_eq!(emx.delete(ME, &["x1", "x2"]).unwrap().len(), 2);
+    assert_eq!(
+        emx.snooze(ME, &["x1"], "2026-09-28T07:00:00Z").unwrap(),
+        vec!["x1"]
+    );
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].path, "/api/accounts/me/messages/keywords");
+    assert_eq!(seen[0].body, r#"{"add":["$flagged"],"ids":["x1"],"remove":[]}"#);
+    assert_eq!(seen[1].path, "/api/accounts/me/messages/delete");
+    assert_eq!(seen[1].body, r#"{"ids":["x1","x2"]}"#);
+    assert_eq!(seen[2].path, "/api/accounts/me/messages/snooze");
+    assert_eq!(seen[2].body, r#"{"ids":["x1"],"until":"2026-09-28T07:00:00Z"}"#);
+    assert!(seen.iter().all(|s| s.method == "POST"));
+}
+
+#[test]
+fn changes_and_a_reload() {
+    let changes = Box::leak(
+        format!(r#"{{"updated":[{MESSAGE}],"destroyed":["x0"],"modseq":812,"hasMore":true}}"#)
+            .into_boxed_str(),
+    );
+    let (base, seen) = server(vec![
+        (200, changes),
+        (
+            410,
+            r#"{"error":{"code":"reload","message":"the state is too old; load the lists again"}}"#,
+        ),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let c = emx.changes(ME, 811).unwrap();
+    assert_eq!((c.updated[0].id.as_str(), c.destroyed[0].as_str()), ("x1", "x0"));
+    assert_eq!(c.modseq, 812);
+    assert!(c.has_more);
+    let err = emx.changes(ME, 1).unwrap_err();
+    assert_eq!(err.code(), Some("reload"));
+    assert!(!err.is_retryable());
+    assert_eq!(seen.lock().unwrap()[0].path, "/api/accounts/me/changes?since=811");
+}
+
+#[test]
+fn the_event_stream() {
+    let (base, seen) = server_with(vec![(
+        200,
+        "event: change\ndata: {\"modseq\": 812}\n\n: keepalive\n\nevent: change\ndata: {\"modseq\": 813}\n\n",
+        "Content-Type: text/event-stream\r\n",
+    )]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let events: Vec<Event> = emx.events(ME).unwrap().map(|e| e.unwrap()).collect();
+    assert_eq!(
+        events,
+        [Event::Change { modseq: 812 }, Event::Change { modseq: 813 }]
+    );
+    assert_eq!(seen.lock().unwrap()[0].path, "/api/accounts/me/events");
+}
+
+#[test]
+fn a_stream_the_service_does_not_offer_is_not_retried() {
+    let (base, _) = server(vec![(
+        501,
+        r#"{"error":{"code":"unavailable","message":"live updates are off on this server"}}"#,
+    )]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let err = emx.events(ME).err().unwrap();
+    assert_eq!(err.code(), Some("unavailable"));
+    assert!(!err.is_retryable());
+}
+
+#[test]
+fn screener_decisions() {
+    let (base, seen) = server(vec![(200, r#"{"ok":true}"#)]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    emx.set_contact(ME, "anna@example.ch", "approved", "Anna")
+        .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].path, "/api/accounts/me/contacts");
+    assert_eq!(
+        seen[0].body,
+        r#"{"address":"anna@example.ch","name":"Anna","state":"approved"}"#
+    );
+}
+
+#[test]
+fn webhooks() {
+    let hook = r#"{"id":"h1","accountId":"u1","url":"https://crm.example.ch/emx","events":["message.received"],"description":"CRM","createdAt":"2026-09-24T07:41:12Z","failures":0,"lastStatus":0}"#;
+    let list = Box::leak(
+        format!(r#"{{"webhooks":[{hook}],"events":["message.received","delivery.failed","ping"]}}"#)
+            .into_boxed_str(),
+    );
+    let made = Box::leak(format!(r#"{{"webhook":{hook},"secret":"whsec_abc"}}"#).into_boxed_str());
+    let (base, seen) = server(vec![
+        (200, list),
+        (200, made),
+        (200, r#"{"ok":true}"#),
+        (200, r#"{"ok":true}"#),
+        (
+            200,
+            r#"{"deliveries":[{"id":"d1","event":"ping","attempts":1,"createdAt":"2026-09-24T07:41:12Z","deliveredAt":"2026-09-24T07:41:13Z","lastStatus":200}]}"#,
+        ),
+        (200, r#"{"ok":true}"#),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let (hooks, events) = emx.webhooks().unwrap();
+    assert_eq!((hooks[0].id.as_str(), events.len()), ("h1", 3));
+    let made = emx
+        .create_webhook(ME, "https://crm.example.ch/emx", &["message.received"], "CRM")
+        .unwrap();
+    assert_eq!(made.secret, "whsec_abc");
+    emx.test_webhook("h1").unwrap();
+    emx.enable_webhook("h1").unwrap();
+    let d = emx.webhook_deliveries("h1", 50).unwrap();
+    assert!(d[0].delivered_at.is_some());
+    emx.delete_webhook("h1").unwrap();
+    let seen = seen.lock().unwrap();
+    let calls: Vec<(&str, &str)> = seen
+        .iter()
+        .map(|s| (s.method.as_str(), s.path.as_str()))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("GET", "/api/me/webhooks"),
+            ("POST", "/api/accounts/me/webhooks"),
+            ("POST", "/api/webhooks/h1/test"),
+            ("POST", "/api/webhooks/h1/enable"),
+            ("GET", "/api/webhooks/h1/deliveries?limit=50"),
+            ("DELETE", "/api/webhooks/h1"),
+        ]
+    );
+    assert_eq!(
+        seen[1].body,
+        r#"{"description":"CRM","events":["message.received"],"url":"https://crm.example.ch/emx"}"#
+    );
+}
+
+#[test]
+fn any_call() {
+    let (base, seen) = server(vec![
+        (200, r#"{"members":[]}"#),
+        (200, r#"{"prefs":{"screener":true}}"#),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let v = emx.get_json("/api/admin/mine/members", &[("q", "anna")]).unwrap();
+    assert!(v["members"].is_array());
+    let v = emx
+        .call_json("PATCH", "/api/me/prefs", &serde_json::json!({"screener": true}))
+        .unwrap();
+    assert_eq!(v["prefs"]["screener"], true);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].path, "/api/admin/mine/members?q=anna");
+    assert_eq!(
+        (seen[1].method.as_str(), seen[1].body.as_str()),
+        ("PATCH", r#"{"screener":true}"#)
+    );
 }

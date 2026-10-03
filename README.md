@@ -96,10 +96,12 @@ Tauri's prerequisites for each system are at
   with the scopes it needs and stored in a file only that person can
   read. In the desktop app it stays on the Rust side; the window never
   sees it.
-- **Nothing hidden.** Every call is in the API reference. The calls the
-  command line and the desktop app make are tested against a server that
-  answers the documented way; the SDK's remaining calls are not yet, and
-  the test list in `sdk/tests` says which are.
+- **Nothing hidden.** Every call the SDK makes is in the API reference.
+  Each call the command line and the desktop app make has a test in
+  `sdk/tests` against a scripted server that answers the way the
+  reference and the service's handlers do, error codes included. The
+  tests do not run against a live service; the command line's own
+  tests run the `emx` binary against the same kind of server.
 - **The service is unversioned and only adds.** Fields are added, never
   renamed or removed; the types ignore what they do not know.
 
