@@ -129,7 +129,7 @@ sessions, a keychain for the token and system notifications are next.
 
 ```sh
 cargo test --workspace --exclude emx-desktop
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --exclude emx-desktop --all-targets -- -D warnings
 ```
 
 Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).

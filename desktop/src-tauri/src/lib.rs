@@ -31,7 +31,9 @@ impl From<Error> for Failure {
         Failure {
             code: e.code().unwrap_or("error").to_string(),
             message: match &e {
-                Error::Api { status: 401, .. } => "The token was refused. Sign in again with a current one.".into(),
+                Error::Api { status: 401, .. } => {
+                    "The token was refused. Sign in again with a current one.".into()
+                }
                 _ => e.to_string(),
             },
         }
@@ -40,19 +42,20 @@ impl From<Error> for Failure {
 
 impl From<String> for Failure {
     fn from(message: String) -> Self {
-        Failure { code: "app".into(), message }
+        Failure {
+            code: "app".into(),
+            message,
+        }
     }
 }
 
 type Outcome<T> = Result<T, Failure>;
 
 fn client(state: &State<Shared>) -> Outcome<Client> {
-    state
-        .lock()
-        .unwrap()
-        .client
-        .clone()
-        .ok_or_else(|| Failure { code: "signed_out".into(), message: "Not signed in.".into() })
+    state.lock().unwrap().client.clone().ok_or_else(|| Failure {
+        code: "signed_out".into(),
+        message: "Not signed in.".into(),
+    })
 }
 
 // --- The token on disk ---------------------------------------------------
@@ -109,7 +112,11 @@ fn connect(app: &AppHandle, state: &State<Shared>, base_url: &str, token: &str) 
 /// Signs in with a token and keeps it for next time.
 #[tauri::command]
 fn sign_in(app: AppHandle, state: State<Shared>, base_url: String, token: String) -> Outcome<Me> {
-    let base = if base_url.trim().is_empty() { emx_sdk::DEFAULT_BASE_URL.to_string() } else { base_url };
+    let base = if base_url.trim().is_empty() {
+        emx_sdk::DEFAULT_BASE_URL.to_string()
+    } else {
+        base_url
+    };
     let me = connect(&app, &state, &base, token.trim())?;
     save_token(&app, &base, token.trim())?;
     Ok(me)
@@ -159,7 +166,10 @@ struct MessagePage {
 #[tauri::command]
 fn messages(state: State<Shared>, account: String, mailbox: String, cursor: String) -> Outcome<MessagePage> {
     let Page { items, cursor } = client(&state)?.messages(&account, &mailbox, 50, &cursor)?;
-    Ok(MessagePage { messages: items, cursor })
+    Ok(MessagePage {
+        messages: items,
+        cursor,
+    })
 }
 
 #[tauri::command]
@@ -197,7 +207,12 @@ fn keywords(
 }
 
 #[tauri::command]
-fn move_messages(state: State<Shared>, account: String, ids: Vec<String>, to: String) -> Outcome<Vec<String>> {
+fn move_messages(
+    state: State<Shared>,
+    account: String,
+    ids: Vec<String>,
+    to: String,
+) -> Outcome<Vec<String>> {
     let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     Ok(client(&state)?.r#move(&account, &ids, &to)?)
 }
@@ -225,13 +240,23 @@ struct PartData {
 #[tauri::command]
 fn part(state: State<Shared>, account: String, id: String, part: String) -> Outcome<PartData> {
     let (data, content_type) = client(&state)?.part(&account, &id, &part)?;
-    Ok(PartData { content_type, base64: base64(&data) })
+    Ok(PartData {
+        content_type,
+        base64: base64(&data),
+    })
 }
 
 /// Writes a part into the Downloads folder, under its own name, without
 /// replacing a file that is there already. Answers with the path.
 #[tauri::command]
-fn save_part(app: AppHandle, state: State<Shared>, account: String, id: String, part: String, filename: String) -> Outcome<String> {
+fn save_part(
+    app: AppHandle,
+    state: State<Shared>,
+    account: String,
+    id: String,
+    part: String,
+    filename: String,
+) -> Outcome<String> {
     let (data, _) = client(&state)?.part(&account, &id, &part)?;
     let dir = app.path().download_dir().map_err(|e| e.to_string())?;
     let name = safe_filename(&filename);
@@ -254,7 +279,13 @@ fn save_part(app: AppHandle, state: State<Shared>, account: String, id: String, 
 fn safe_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '_' } else { c })
+        .map(|c| {
+            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let cleaned = cleaned.trim().trim_matches('.').to_string();
     if cleaned.is_empty() {
@@ -315,7 +346,13 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<std::sync::a
                 }
                 match event {
                     Ok(emx_sdk::Event::Change { modseq }) => {
-                        let _ = app.emit("emx://change", ChangeNotice { account: account.clone(), modseq });
+                        let _ = app.emit(
+                            "emx://change",
+                            ChangeNotice {
+                                account: account.clone(),
+                                modseq,
+                            },
+                        );
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -329,11 +366,21 @@ fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
