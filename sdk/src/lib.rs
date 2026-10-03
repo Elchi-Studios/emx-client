@@ -3,8 +3,10 @@
 //! EMX is hosted business mail by Elchi Studios. The API the web client
 //! uses is the developer API: everything the client can do, a program can
 //! do with a token, within the token's scopes and the person's own rights.
-//! This crate is that API as Rust types and calls, with nothing added and
-//! nothing left out that a token can reach.
+//! This crate is that API as Rust types and calls: typed calls for what a
+//! person's token does with mail, and [`Client::get_json`] and
+//! [`Client::call_json`] for everything else, such as drafts and the
+//! administration calls.
 //!
 //! ```no_run
 //! use emx_sdk::Client;
@@ -35,6 +37,16 @@ pub use client::{Client, Page};
 pub use error::Error;
 pub use events::{Event, Events};
 pub use types::*;
+
+// The READMEs' examples, compiled with the doctests so that they keep
+// compiling.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeExamples;
+
+#[cfg(doctest)]
+#[doc = include_str!("../../README.md")]
+struct RepositoryReadmeExamples;
 
 /// The address of the hosted service.
 pub const DEFAULT_BASE_URL: &str = "https://mail.emxmail.app";

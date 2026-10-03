@@ -39,9 +39,11 @@
 - The SDK's tests cover every call the command line and the desktop app
   make, and the scripted server answers a refused token with
   `bad_token`, the code the service sends.
+- The README examples compile, and are compiled with the doctests from
+  now on. The SDK's README says how to depend on it.
 
 ## 0.1.0
 
-The first release: the SDK with every call a token can make, the command
-line, and the desktop app with reading, search, replies, attachments and
-live updates.
+The first release: the SDK with the calls a person's token makes for
+mail, the command line, and the desktop app with reading, search,
+replies, attachments and live updates.

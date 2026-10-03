@@ -1,6 +1,6 @@
 <div align="center">
 
-```
+```text
 ███████╗███╗   ███╗██╗  ██╗
 ██╔════╝████╗ ████║╚██╗██╔╝
 █████╗  ██╔████╔██║ ╚███╔╝
@@ -47,7 +47,7 @@ The service does the work. Search, threading, sanitising HTML, signing
 and delivering mail all happen on the server. A client shows what it is
 told and asks for what changed since the last modseq it handled:
 
-```
+```text
 GET /api/accounts/me/changes?since=812
 {"updated": [...], "destroyed": [...], "modseq": 830, "hasMore": false}
 ```
@@ -72,13 +72,16 @@ emx --json list | jq '.messages[].subject'
 
 The SDK, from Rust:
 
-```rust
+```rust,no_run
 use emx_sdk::{Client, ME};
 
-let emx = Client::new("emx_...")?;
-let inbox = emx.mailboxes(ME)?.into_iter().find(|m| m.role == "inbox").unwrap();
-for m in emx.messages(ME, &inbox.id, 20, "")?.items {
-    println!("{}  {}", m.from, m.subject);
+fn main() -> Result<(), emx_sdk::Error> {
+    let emx = Client::new("emx_...")?;
+    let inbox = emx.mailboxes(ME)?.into_iter().find(|m| m.role == "inbox").unwrap();
+    for m in emx.messages(ME, &inbox.id, 20, "")?.items {
+        println!("{}  {}", m.from, m.subject);
+    }
+    Ok(())
 }
 ```
 
