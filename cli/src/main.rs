@@ -146,11 +146,40 @@ fn run(command: &str, a: &Args) -> Result<(), String> {
     r.map_err(|e| describe(&e))
 }
 
-fn describe(e: &Error) -> String {
+/// Why a command failed: EMX refused or could not be reached, or
+/// something on this computer went wrong (a file, the input, the
+/// arguments). They are kept apart so that a missing file is not
+/// reported as a network problem.
+enum Fail {
+    Emx(Error),
+    Local(String),
+}
+
+impl From<Error> for Fail {
+    fn from(e: Error) -> Self {
+        Fail::Emx(e)
+    }
+}
+
+fn local(e: impl std::fmt::Display) -> Fail {
+    Fail::Local(e.to_string())
+}
+
+/// A local failure that names the file it concerns.
+fn file_err(path: &str, e: std::io::Error) -> Fail {
+    Fail::Local(format!("{path}: {e}"))
+}
+
+fn describe(e: &Fail) -> String {
     match e {
-        Error::Api { status: 401, .. } => "the token was refused; run emx login with a current one".into(),
-        Error::Api { code, message, .. } if code == "reload" => format!("{message}; run the command again"),
-        _ => e.to_string(),
+        Fail::Local(m) => m.clone(),
+        Fail::Emx(Error::Api { status: 401, .. }) => {
+            "the token was refused; run emx login with a current one".into()
+        }
+        Fail::Emx(Error::Api { code, message, .. }) if code == "reload" => {
+            format!("{message}; run the command again")
+        }
+        Fail::Emx(e) => e.to_string(),
     }
 }
 
@@ -218,7 +247,7 @@ fn read_hidden() -> Result<String, String> {
 
 // --- Read ----------------------------------------------------------------
 
-fn me(emx: &Client, json: bool) -> Result<(), Error> {
+fn me(emx: &Client, json: bool) -> Result<(), Fail> {
     let me = emx.me()?;
     if json {
         return out(&me);
@@ -252,7 +281,7 @@ fn me(emx: &Client, json: bool) -> Result<(), Error> {
     Ok(())
 }
 
-fn mailboxes(emx: &Client, account: &str, json: bool) -> Result<(), Error> {
+fn mailboxes(emx: &Client, account: &str, json: bool) -> Result<(), Fail> {
     let list = emx.mailboxes(account)?;
     if json {
         return out(&list);
@@ -266,7 +295,7 @@ fn mailboxes(emx: &Client, account: &str, json: bool) -> Result<(), Error> {
 }
 
 /// A mailbox by name, role or id.
-fn find_mailbox(emx: &Client, account: &str, want: &str) -> Result<Mailbox, Error> {
+fn find_mailbox(emx: &Client, account: &str, want: &str) -> Result<Mailbox, Fail> {
     let list = emx.mailboxes(account)?;
     let lower = want.to_lowercase();
     list.iter()
@@ -274,16 +303,10 @@ fn find_mailbox(emx: &Client, account: &str, want: &str) -> Result<Mailbox, Erro
         .or_else(|| list.iter().find(|m| m.role == lower))
         .or_else(|| list.iter().find(|m| m.name.to_lowercase() == lower))
         .cloned()
-        .ok_or_else(|| Error::Api {
-            status: 404,
-            code: "not_found".into(),
-            message: format!("no mailbox called {want}"),
-            request_id: None,
-            retry_after: None,
-        })
+        .ok_or_else(|| Fail::Local(format!("no mailbox called {want}; emx mailboxes lists them")))
 }
 
-fn list(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Error> {
+fn list(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> {
     let mailbox = find_mailbox(emx, account, a.value("mailbox").unwrap_or("inbox"))?;
     let limit = a.number("limit", 30).map_err(config_err)?;
     let page = emx.messages(account, &mailbox.id, limit, a.value("cursor").unwrap_or(""))?;
@@ -321,11 +344,11 @@ fn print_messages(list: &[Message]) {
     }
 }
 
-fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Result<(), Error> {
+fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Result<(), Fail> {
     let id = rest.first().ok_or_else(|| usage("read <id>"))?;
     if a.switch("raw") {
         let raw = emx.raw(account, id)?;
-        std::io::stdout().write_all(&raw)?;
+        std::io::stdout().write_all(&raw).map_err(local)?;
         return Ok(());
     }
     let full = emx.message(account, id)?;
@@ -361,7 +384,7 @@ fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Res
     Ok(())
 }
 
-fn part(emx: &Client, account: &str, rest: &[&str], a: &Args) -> Result<(), Error> {
+fn part(emx: &Client, account: &str, rest: &[&str], a: &Args) -> Result<(), Fail> {
     let id = rest
         .first()
         .ok_or_else(|| usage("part <id> --part P [--out FILE]"))?;
@@ -371,15 +394,15 @@ fn part(emx: &Client, account: &str, rest: &[&str], a: &Args) -> Result<(), Erro
     let (data, kind) = emx.part(account, id, p)?;
     match a.value("out") {
         Some(path) => {
-            std::fs::write(path, &data)?;
+            std::fs::write(path, &data).map_err(|e| file_err(path, e))?;
             eprintln!("{} bytes of {kind} written to {path}", data.len());
         }
-        None => std::io::stdout().write_all(&data)?,
+        None => std::io::stdout().write_all(&data).map_err(local)?,
     }
     Ok(())
 }
 
-fn thread(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), Error> {
+fn thread(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), Fail> {
     let id = rest.first().ok_or_else(|| usage("thread <thread id>"))?;
     let list = emx.thread(account, id)?;
     if json {
@@ -389,7 +412,7 @@ fn thread(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), 
     Ok(())
 }
 
-fn search(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), Error> {
+fn search(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), Fail> {
     if rest.is_empty() {
         return Err(usage("search <words...>"));
     }
@@ -410,7 +433,7 @@ fn keywords(
     add: &[&str],
     remove: &[&str],
     json: bool,
-) -> Result<(), Error> {
+) -> Result<(), Fail> {
     if ids.is_empty() {
         return Err(usage("<ids...>"));
     }
@@ -418,7 +441,7 @@ fn keywords(
     done(&changed, json)
 }
 
-fn mv(emx: &Client, account: &str, ids: &[&str], a: &Args, json: bool) -> Result<(), Error> {
+fn mv(emx: &Client, account: &str, ids: &[&str], a: &Args, json: bool) -> Result<(), Fail> {
     let to = a.value("to").ok_or_else(|| usage("move <ids...> --to MAILBOX"))?;
     if ids.is_empty() || a.values("to").len() > 1 {
         return Err(usage("move <ids...> --to MAILBOX"));
@@ -428,7 +451,7 @@ fn mv(emx: &Client, account: &str, ids: &[&str], a: &Args, json: bool) -> Result
     done(&changed, json)
 }
 
-fn delete(emx: &Client, account: &str, ids: &[&str], json: bool) -> Result<(), Error> {
+fn delete(emx: &Client, account: &str, ids: &[&str], json: bool) -> Result<(), Fail> {
     if ids.is_empty() {
         return Err(usage("delete <ids...>"));
     }
@@ -436,7 +459,7 @@ fn delete(emx: &Client, account: &str, ids: &[&str], json: bool) -> Result<(), E
     done(&changed, json)
 }
 
-fn snooze(emx: &Client, account: &str, ids: &[&str], a: &Args, json: bool) -> Result<(), Error> {
+fn snooze(emx: &Client, account: &str, ids: &[&str], a: &Args, json: bool) -> Result<(), Fail> {
     let until = a
         .value("until")
         .ok_or_else(|| usage("snooze <ids...> --until 2026-09-28T07:00:00Z"))?;
@@ -447,7 +470,7 @@ fn snooze(emx: &Client, account: &str, ids: &[&str], a: &Args, json: bool) -> Re
     done(&changed, json)
 }
 
-fn done(changed: &[String], json: bool) -> Result<(), Error> {
+fn done(changed: &[String], json: bool) -> Result<(), Fail> {
     if json {
         return out(&serde_json::json!({"changed": changed}));
     }
@@ -457,7 +480,7 @@ fn done(changed: &[String], json: bool) -> Result<(), Error> {
 
 // --- Send ----------------------------------------------------------------
 
-fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Error> {
+fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
     // Recipients collect over repeated flags, as attachments do.
     let to = a.addresses("to");
     if to.is_empty() {
@@ -477,20 +500,22 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Error> {
     };
     let text = match (a.value("text"), a.value("body-file")) {
         (Some(t), _) => t.to_string(),
-        (None, Some(f)) => std::fs::read_to_string(f)?,
+        (None, Some(f)) => std::fs::read_to_string(f).map_err(|e| file_err(f, e))?,
         (None, None) if a.value("html").is_none() => {
             let mut s = String::new();
             if std::io::stdin().is_terminal() {
                 eprintln!("Type the message, then Ctrl-D:");
             }
-            std::io::stdin().read_to_string(&mut s)?;
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .map_err(|e| Fail::Local(format!("reading the message from standard input: {e}")))?;
             s
         }
         _ => String::new(),
     };
     let mut attachments = Vec::new();
     for path in a.values("attach") {
-        let data = std::fs::read(path)?;
+        let data = std::fs::read(path).map_err(|e| file_err(path, e))?;
         let filename = std::path::Path::new(path)
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
@@ -532,7 +557,7 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Error> {
 
 // --- The screener --------------------------------------------------------
 
-fn contacts(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Error> {
+fn contacts(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> {
     let list = emx.contacts(account, a.value("state").unwrap_or(""))?;
     if json {
         return out(&list);
@@ -543,14 +568,14 @@ fn contacts(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Err
     Ok(())
 }
 
-fn contact(emx: &Client, account: &str, rest: &[&str], state: &str, a: &Args) -> Result<(), Error> {
+fn contact(emx: &Client, account: &str, rest: &[&str], state: &str, a: &Args) -> Result<(), Fail> {
     let address = rest.first().ok_or_else(|| usage("<address>"))?;
     emx.set_contact(account, address, state, a.value("name").unwrap_or(""))?;
     println!("{address} {state}");
     Ok(())
 }
 
-fn forget(emx: &Client, account: &str, rest: &[&str]) -> Result<(), Error> {
+fn forget(emx: &Client, account: &str, rest: &[&str]) -> Result<(), Fail> {
     let address = rest.first().ok_or_else(|| usage("forget <address>"))?;
     emx.remove_contact(account, address)?;
     println!("{address} forgotten");
@@ -559,7 +584,7 @@ fn forget(emx: &Client, account: &str, rest: &[&str]) -> Result<(), Error> {
 
 // --- Webhooks ------------------------------------------------------------
 
-fn webhooks(emx: &Client, json: bool) -> Result<(), Error> {
+fn webhooks(emx: &Client, json: bool) -> Result<(), Fail> {
     let (hooks, events) = emx.webhooks()?;
     if json {
         return out(&serde_json::json!({"webhooks": hooks, "events": events}));
@@ -586,7 +611,7 @@ fn webhooks(emx: &Client, json: bool) -> Result<(), Error> {
     Ok(())
 }
 
-fn webhook(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Result<(), Error> {
+fn webhook(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Result<(), Fail> {
     let what = rest.first().copied().unwrap_or("");
     let id = rest.get(1).copied();
     match what {
@@ -645,7 +670,7 @@ fn webhook(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> 
 /// Follows the account: for every change event, asks what changed and
 /// prints it, or hands it to a command. Reconnects when the stream ends,
 /// and picks up from the last modseq, so nothing in between is missed.
-fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Error> {
+fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> {
     let mut modseq = emx
         .mailboxes(account)?
         .iter()
@@ -666,7 +691,7 @@ fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Error>
                 backoff = (backoff * 2).min(60);
                 continue;
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
         backoff = 1;
         for event in stream {
@@ -690,11 +715,11 @@ fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Error>
                             .unwrap_or(0);
                         break;
                     }
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(e.into()),
                 };
                 modseq = changes.modseq;
                 if json {
-                    println!("{}", serde_json::to_string(&changes)?);
+                    println!("{}", serde_json::to_string(&changes).map_err(local)?);
                 } else {
                     for m in &changes.updated {
                         println!("{} {}  {}  {}", m.modseq, m.id, m.from, trim(&m.subject, 60));
@@ -738,7 +763,7 @@ fn run_exec(cmd: &str, changes: &emx_sdk::Changes) {
 
 // --- Anything ------------------------------------------------------------
 
-fn api(emx: &Client, rest: &[&str], a: &Args) -> Result<(), Error> {
+fn api(emx: &Client, rest: &[&str], a: &Args) -> Result<(), Fail> {
     let (method, path) = match rest {
         [m, p, ..] => (m.to_uppercase(), *p),
         _ => return Err(usage("api GET|POST|PATCH|PUT|DELETE /api/... [--data JSON]")),
@@ -750,28 +775,30 @@ fn api(emx: &Client, rest: &[&str], a: &Args) -> Result<(), Error> {
         emx.get_json(path, &[])?
     } else {
         let body: serde_json::Value = match a.value("data") {
-            Some(d) => serde_json::from_str(d)?,
+            Some(d) => {
+                serde_json::from_str(d).map_err(|e| Fail::Local(format!("--data is not JSON: {e}")))?
+            }
             None => serde_json::Value::Null,
         };
         emx.call_json(&method, path, &body)?
     };
-    println!("{}", serde_json::to_string_pretty(&v)?);
+    println!("{}", serde_json::to_string_pretty(&v).map_err(local)?);
     Ok(())
 }
 
 // --- Helpers -------------------------------------------------------------
 
-fn out<T: serde::Serialize>(v: &T) -> Result<(), Error> {
-    println!("{}", serde_json::to_string_pretty(v)?);
+fn out<T: serde::Serialize>(v: &T) -> Result<(), Fail> {
+    println!("{}", serde_json::to_string_pretty(v).map_err(local)?);
     Ok(())
 }
 
-fn usage(s: &str) -> Error {
-    Error::Config(format!("usage: emx {s}"))
+fn usage(s: &str) -> Fail {
+    Fail::Local(format!("usage: emx {s}"))
 }
 
-fn config_err(s: String) -> Error {
-    Error::Config(s)
+fn config_err(s: String) -> Fail {
+    Fail::Local(s)
 }
 
 fn trim(s: &str, n: usize) -> String {
@@ -929,6 +956,59 @@ mod tests {
         assert_eq!(base64(b"fo"), "Zm8=");
         assert_eq!(base64(b"foo"), "Zm9v");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    fn args(list: &[&str]) -> Args {
+        Args::parse(list.iter().map(|s| s.to_string())).unwrap()
+    }
+
+    /// A client for a port nothing listens on: a test that reaches the
+    /// network fails loudly instead of passing by accident.
+    fn offline() -> Client {
+        Client::with_base_url("http://127.0.0.1:9", "emx_test").unwrap()
+    }
+
+    fn local_message(r: Result<(), Fail>) -> String {
+        match r {
+            Err(Fail::Local(m)) => m,
+            Err(Fail::Emx(e)) => panic!("expected a local failure, got {e}"),
+            Ok(()) => panic!("expected a failure"),
+        }
+    }
+
+    #[test]
+    fn a_missing_file_is_a_local_failure_with_its_name() {
+        let a = args(&[
+            "send",
+            "--from",
+            "me@example.ch",
+            "--to",
+            "anna@example.ch",
+            "--text",
+            "Hi",
+            "--attach",
+            "/nonexistent/Offerte.pdf",
+        ]);
+        let m = local_message(send(&offline(), &a, false));
+        assert!(m.starts_with("/nonexistent/Offerte.pdf: "), "{m}");
+        let a = args(&[
+            "send",
+            "--from",
+            "me@example.ch",
+            "--to",
+            "a@example.ch",
+            "--body-file",
+            "/nonexistent/body.txt",
+        ]);
+        let m = local_message(send(&offline(), &a, false));
+        assert!(m.starts_with("/nonexistent/body.txt: "), "{m}");
+    }
+
+    #[test]
+    fn bad_json_in_data_is_a_local_failure() {
+        let a = args(&["api", "POST", "/api/me/prefs", "--data", "{screener: true}"]);
+        let m = local_message(api(&offline(), &["POST", "/api/me/prefs"], &a));
+        assert!(m.starts_with("--data is not JSON: "), "{m}");
     }
 
     #[test]
