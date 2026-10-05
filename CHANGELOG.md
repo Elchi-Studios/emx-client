@@ -83,6 +83,11 @@
 - The desktop composer sends with one idempotency key for its message,
   however often Send is pressed, so pressing it again after a timeout
   no longer risks a second copy.
+- Signing out on the desktop app's offline screen while it is trying to
+  connect now stays signed out: an attempt that ended afterwards used
+  to start the app, or bring the offline screen back. When EMX refuses
+  for a moment because of too many requests, the screen says so instead
+  of "No connection", and so it does when EMX is not answering.
 
 ## 0.1.0
 

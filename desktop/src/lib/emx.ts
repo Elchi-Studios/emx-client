@@ -132,6 +132,16 @@ export function retryable(e: unknown): boolean {
   return !!(e && typeof e === 'object' && (e as Failure).retryable);
 }
 
+/// The heading for a failure that passes: the network is away, EMX
+/// refuses for a moment because of too many requests, or EMX is not
+/// answering.
+export function outage(e: unknown): string {
+  const code = e && typeof e === 'object' ? (e as Failure).code : '';
+  if (code === 'offline') return 'No connection';
+  if (code === 'rate_limited') return 'Too many requests';
+  return 'EMX is not answering';
+}
+
 // The service leaves empty lists out of its JSON. The Rust side fills
 // them in, and a message is made whole here too, so nothing downstream
 // has to ask.

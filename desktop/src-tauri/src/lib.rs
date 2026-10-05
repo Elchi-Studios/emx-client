@@ -89,6 +89,13 @@ impl From<Error> for Failure {
                 "offline".into(),
                 "EMX cannot be reached. Check the internet connection and try again.".into(),
             ),
+            // The per-minute limit: the only 429 that passes, whatever
+            // code the service gave it.
+            Error::Api { status: 429, .. } if retryable => (
+                "rate_limited".into(),
+                "EMX received too many requests from this app in the last minute. Try again in a moment."
+                    .into(),
+            ),
             Error::Api { status, code, .. } if retryable && *status >= 500 => (
                 code.clone(),
                 "EMX is not answering right now. Try again in a moment.".into(),
@@ -719,5 +726,27 @@ mod tests {
         });
         assert!(!scope.retryable);
         assert!(scope.message.contains("mail:write"));
+
+        let busy = Failure::from(Error::Api {
+            status: 429,
+            code: "rate_limited".into(),
+            message: "at most 600 requests per minute per token".into(),
+            request_id: None,
+            retry_after: Some(20),
+        });
+        assert_eq!(busy.code, "rate_limited");
+        assert!(busy.retryable);
+        assert!(busy.message.contains("too many requests"), "{}", busy.message);
+        assert!(!busy.message.contains("HTTP 429"), "{}", busy.message);
+
+        let daily = Failure::from(Error::Api {
+            status: 429,
+            code: "daily_limit".into(),
+            message: "the daily sending limit is reached".into(),
+            request_id: None,
+            retry_after: None,
+        });
+        assert_eq!(daily.code, "daily_limit");
+        assert!(!daily.retryable);
     }
 }

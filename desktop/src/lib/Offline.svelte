@@ -1,18 +1,19 @@
 <script lang="ts">
   let {
+    title,
     message,
     trying,
     onretry,
     onsignout
-  }: { message: string; trying: boolean; onretry: () => void; onsignout: () => void } = $props();
+  }: { title: string; message: string; trying: boolean; onretry: () => void; onsignout: () => void } = $props();
 </script>
 
 <div class="wrap">
   <div class="card" role="status">
     <div class="mark">EMX</div>
-    <h1>No connection</h1>
+    <h1>{title}</h1>
     <p>{message}</p>
-    <p class="muted">You are still signed in. The app connects on its own as soon as EMX can be reached again.</p>
+    <p class="muted">You are still signed in. The app connects on its own as soon as EMX lets it.</p>
     <div class="foot">
       <button class="btn primary" onclick={onretry} disabled={trying}>{trying ? 'Connecting' : 'Try now'}</button>
       <span class="grow"></span>
