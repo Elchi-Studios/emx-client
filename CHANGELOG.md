@@ -88,6 +88,8 @@
   to start the app, or bring the offline screen back. When EMX refuses
   for a moment because of too many requests, the screen says so instead
   of "No connection", and so it does when EMX is not answering.
+- `emx` shows a time that carries no zone without one; it used to end
+  in a piece of its seconds, as in `2026-09-24 06:12 :12:40`.
 
 ## 0.1.0
 

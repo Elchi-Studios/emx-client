@@ -957,15 +957,19 @@ fn config_err(s: String) -> Fail {
 }
 
 /// A timestamp from the service, as date and minute with its zone: the
-/// service sends UTC, and a time without a zone reads as local time.
+/// service sends UTC, and a time without a zone reads as local time. A
+/// timestamp that carries no zone is shown without one.
 fn when(ts: &str) -> String {
     let (Some(day), Some(minute)) = (ts.get(..10), ts.get(11..16)) else {
         return ts.to_string();
     };
-    let zone = if ts.ends_with('Z') || ts.ends_with("+00:00") {
-        "UTC"
-    } else {
-        ts.get(ts.len().saturating_sub(6)..).unwrap_or("")
+    // After the minute come the seconds and their fraction, if any, and
+    // then the zone, if any.
+    let rest = ts.get(16..).unwrap_or("");
+    let zone = match rest.trim_start_matches(|c: char| c == ':' || c == '.' || c.is_ascii_digit()) {
+        "" => return format!("{day} {minute}"),
+        "Z" | "z" | "+00:00" | "-00:00" => "UTC",
+        zone => zone,
     };
     format!("{day} {minute} {zone}")
 }
@@ -1213,6 +1217,12 @@ mod tests {
         assert_eq!(when("2026-09-24T08:12:40+02:00"), "2026-09-24 08:12 +02:00");
         assert_eq!(when(""), "");
         assert_eq!(when("soon"), "soon");
+        // Without a zone, no zone is made up from the seconds.
+        assert_eq!(when("2026-09-24T06:12:40"), "2026-09-24 06:12");
+        assert_eq!(when("2026-09-24T06:12:40.123456"), "2026-09-24 06:12");
+        assert_eq!(when("2026-09-24T06:12:40.5-05:00"), "2026-09-24 06:12 -05:00");
+        assert_eq!(when("2026-09-24T06:12Z"), "2026-09-24 06:12 UTC");
+        assert_eq!(when("2026-09-24T06:12:40z"), "2026-09-24 06:12 UTC");
     }
 
     fn me_json(v: &str) -> emx_sdk::Me {
