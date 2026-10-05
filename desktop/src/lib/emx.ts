@@ -115,6 +115,14 @@ export interface Failure {
   retryable?: boolean;
 }
 
+/// A new idempotency key: 128 random bits. EMX answers a send with a key
+/// it has seen from the same person within a day with the first answer,
+/// instead of sending again.
+export function newKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return 'emx-desktop-' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export function describe(e: unknown): string {
   if (e && typeof e === 'object' && 'message' in e) return String((e as Failure).message);
   return String(e);
@@ -164,7 +172,7 @@ export const emx = {
     invoke<{ content_type: string; base64: string }>('part', { account, id, part }),
   savePart: (account: string, id: string, part: string, filename: string) =>
     invoke<string>('save_part', { account, id, part, filename }),
-  send: (draft: Draft) => invoke<number>('send', { draft }),
+  send: (draft: Draft, idempotencyKey: string) => invoke<number>('send', { draft, idempotencyKey }),
   contacts: (account: string, state: string) => invoke('contacts', { account, contactState: state }),
   setContact: (account: string, address: string, state: string) =>
     invoke<void>('set_contact', { account, address, contactState: state }),

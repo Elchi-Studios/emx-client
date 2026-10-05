@@ -423,10 +423,18 @@ fn safe_filename(name: &str) -> String {
     }
 }
 
+/// Sends with the composer's idempotency key, the same each time Send
+/// is pressed for one message, so that pressing it again after a
+/// timeout cannot send the message twice.
 #[tauri::command]
-async fn send(state: State<'_, Shared>, draft: Draft) -> Outcome<i64> {
-    let c = client(&state)?;
-    Ok(blocking(move || c.send_mail(&draft)).await?.recipients)
+async fn send(state: State<'_, Shared>, draft: Draft, idempotency_key: String) -> Outcome<i64> {
+    deliver(client(&state)?, draft, idempotency_key).await
+}
+
+async fn deliver(c: Client, draft: Draft, key: String) -> Outcome<i64> {
+    Ok(blocking(move || c.send_mail_with_key(&draft, &key))
+        .await?
+        .recipients)
 }
 
 #[tauri::command]
@@ -590,6 +598,60 @@ mod tests {
         let there = tauri::async_runtime::block_on(blocking(|| Ok::<_, String>(std::thread::current().id())))
             .unwrap();
         assert_ne!(here, there);
+    }
+
+    /// A server that answers every send as sent and reports the key it
+    /// came with.
+    fn send_server() -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let (mut key, mut length, mut line) = (String::new(), 0usize, String::new());
+                while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                    let lower = line.to_ascii_lowercase();
+                    if lower.starts_with("idempotency-key:") {
+                        key = line["idempotency-key:".len()..].trim().to_string();
+                    }
+                    if let Some(v) = lower.strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                    line.clear();
+                }
+                let _ = reader.read_exact(&mut vec![0u8; length]);
+                let _ = tx.send(key);
+                let body = r#"{"sent":true,"recipients":1}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (base, rx)
+    }
+
+    #[test]
+    fn a_send_carries_the_composers_key() {
+        let (base, keys) = send_server();
+        let c = Client::with_base_url(&base, "emx_test").unwrap();
+        let draft = Draft {
+            from: "samuel@elchi.dev".into(),
+            to: "anna@example.ch".into(),
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            let sent =
+                tauri::async_runtime::block_on(deliver(c.clone(), draft.clone(), "emx-desktop-1".into()));
+            assert_eq!(sent.unwrap(), 1);
+            assert_eq!(keys.recv().unwrap(), "emx-desktop-1");
+        }
+        let empty = tauri::async_runtime::block_on(deliver(c, draft, String::new()));
+        assert!(empty.is_err(), "a send without a key is refused");
     }
 
     fn a_client() -> Client {

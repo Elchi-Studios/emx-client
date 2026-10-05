@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from '$lib/state.svelte';
-  import { emx } from '$lib/emx';
+  import { emx, newKey } from '$lib/emx';
 
   const start = app.composing ?? {};
   let from = $state(app.me?.sendFrom.find((s) => s.primary && s.address.toLowerCase() === app.accountName.toLowerCase())?.address ?? app.me?.sendFrom[0]?.address ?? '');
@@ -11,6 +11,10 @@
   let text = $state(start.text ?? '');
   let files = $state<{ filename: string; contentType: string; data: string }[]>([]);
   let busy = $state(false);
+  // One key for this message, however often Send is pressed. After a
+  // timeout the message may have gone out; sending again with the same
+  // key sends it if it did not, and not a second time if it did.
+  const idempotencyKey = newKey();
 
   async function attach(e: Event): Promise<void> {
     const input = e.currentTarget as HTMLInputElement;
@@ -31,7 +35,7 @@
     e.preventDefault();
     busy = true;
     try {
-      const n = await emx.send({
+      const draft = {
         from,
         to,
         cc: showCc ? cc : '',
@@ -40,7 +44,8 @@
         inReplyTo: start.inReplyTo,
         references: start.references,
         attachments: files
-      });
+      };
+      const n = await emx.send(draft, idempotencyKey);
       app.say(`Sent to ${n} recipient${n === 1 ? '' : 's'}`);
       app.composing = null;
     } catch (err) {

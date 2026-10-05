@@ -80,6 +80,9 @@
   or the offline screen's repeated attempts to connect held the window
   still. A sign-in that is still under way when the person signs out
   now comes to nothing instead of signing them in again.
+- The desktop composer sends with one idempotency key for its message,
+  however often Send is pressed, so pressing it again after a timeout
+  no longer risks a second copy.
 
 ## 0.1.0
 
