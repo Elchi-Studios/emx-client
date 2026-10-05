@@ -69,6 +69,12 @@
   connection, and keep its socket, for over an hour, once for every
   reconnect. ureq is held to 3.4, since this uses its transport
   traits, which are outside its semver promise.
+- `emx send --idempotency-key K` sends with a key of your choosing;
+  without it, each run makes a new one. When the answer is lost, the
+  error names the key, and the same command with it sends the message
+  once at most. `emx_sdk::idempotency_key()` makes a key, and
+  `send_mail_with_key` refuses an empty key, one over 200 characters
+  and one with characters a header cannot carry, before sending.
 
 ## 0.1.0
 

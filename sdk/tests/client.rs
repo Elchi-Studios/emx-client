@@ -305,6 +305,27 @@ fn a_send_with_a_given_key_uses_it() {
 }
 
 #[test]
+fn a_key_the_service_would_not_take_is_refused_before_sending() {
+    let (base, seen) = server(vec![(200, SENT)]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    for key in ["", "  ", &"k".repeat(201), "rechnung 117", "rechnung-\u{e4}"] {
+        let err = emx.send_mail_with_key(&draft(), key).unwrap_err();
+        assert!(matches!(err, Error::Config(_)), "{key:?}: {err}");
+    }
+    assert!(seen.lock().unwrap().is_empty(), "nothing was sent");
+    emx.send_mail_with_key(&draft(), &"k".repeat(200)).unwrap();
+    assert_eq!(seen.lock().unwrap()[0].idempotency_key.len(), 200);
+}
+
+#[test]
+fn a_new_key_is_one_the_service_takes() {
+    let a = emx_sdk::idempotency_key();
+    let b = emx_sdk::idempotency_key();
+    assert_ne!(a, b);
+    assert!(a.len() <= 200 && a.bytes().all(|c| c.is_ascii_graphic()), "{a}");
+}
+
+#[test]
 fn lasting_refusals_are_not_retried() {
     let (base, seen) = server_with(vec![
         (

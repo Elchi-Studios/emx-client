@@ -354,8 +354,16 @@ impl Client {
     /// The service answers the same key from the same person within a day
     /// with the first answer instead of sending again, so a program that
     /// repeats a send itself, after a lost connection or a restart, passes
-    /// the key it used the first time. At most 200 characters.
+    /// the key it used the first time; [`idempotency_key`](crate::idempotency_key)
+    /// makes one. A key is 1 to 200 visible ASCII characters; any other
+    /// is refused before anything is sent, as an empty one would send
+    /// without the protection and a longer one is refused by the service.
     pub fn send_mail_with_key(&self, draft: &Draft, key: &str) -> Result<Sent, Error> {
+        if key.is_empty() || key.len() > 200 || !key.bytes().all(|b| b.is_ascii_graphic()) {
+            return Err(Error::Config(
+                "an idempotency key is 1 to 200 visible ASCII characters, without spaces".into(),
+            ));
+        }
         self.send_with("POST", "/api/send", draft, Some(key), Some(SEND_TIMEOUT))
     }
 
@@ -676,10 +684,12 @@ struct WebhookList {
     events: Vec<String>,
 }
 
-/// A key no other send of this person will use: 128 bits from the
-/// randomly seeded hasher of the standard library, with the time and a
-/// counter folded in so that two keys made in one instant still differ.
-fn idempotency_key() -> String {
+/// A new key for [`Client::send_mail_with_key`], which no other send
+/// will use: 128 bits from the randomly seeded hasher of the standard
+/// library, with the time and a counter folded in so that two keys made
+/// in one instant still differ. A program that may repeat a send makes
+/// one key per message and keeps it until the message is sent.
+pub fn idempotency_key() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::BuildHasher;
     use std::sync::atomic::{AtomicU64, Ordering};

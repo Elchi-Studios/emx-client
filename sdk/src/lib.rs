@@ -33,7 +33,7 @@ mod events;
 mod types;
 pub mod webhook;
 
-pub use client::{Client, Page};
+pub use client::{idempotency_key, Client, Page};
 pub use error::Error;
 pub use events::{Event, Events};
 pub use types::*;

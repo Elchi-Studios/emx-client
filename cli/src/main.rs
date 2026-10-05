@@ -57,8 +57,10 @@ Change
 Send
   send --to A [--cc A] [--bcc A] --subject S [--from A]
        [--text T | --body-file F | stdin] [--html H]
-       [--attach FILE]... [--in-reply-to MSGID]
-                             --to, --cc and --bcc repeat, or take a list: a, b
+       [--attach FILE]... [--in-reply-to MSGID] [--idempotency-key K]
+                             --to, --cc and --bcc repeat, or take a list: a, b;
+                             a send again with the same K within a day goes
+                             out once at most (default: a new K each time)
 
 The screener
   contacts [--state approved|blocked]
@@ -600,7 +602,28 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
             .unwrap_or_default(),
         attachments,
     };
-    let sent = emx.send_mail(&draft)?;
+    // One key for this message. When the answer is lost, the message may
+    // have gone out or not; the error names the key, and the same command
+    // with it sends the message if it did not go, and not a second time
+    // if it did.
+    let key = match a.value("idempotency-key") {
+        Some(k) => k.to_string(),
+        None => emx_sdk::idempotency_key(),
+    };
+    let sent = match emx.send_mail_with_key(&draft, &key) {
+        Ok(sent) => sent,
+        // A refusal with a status below 500, the rate limit among them,
+        // came before anything was sent; after any other failure nobody
+        // knows.
+        Err(e @ (Error::Transport(_) | Error::Api { status: 500.., .. })) => {
+            return Err(Fail::Local(format!(
+                "{}\nThe message may have been sent. To send it again without a second copy, \
+                 repeat the command with --idempotency-key {key}",
+                describe(&Fail::Emx(e))
+            )))
+        }
+        Err(e) => return Err(e.into()),
+    };
     if json {
         return out(&sent);
     }
@@ -760,7 +783,10 @@ fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> 
                     }
                 }
             }
-            Err(e) if e.is_retryable() => {
+            // A refusal with a status below 500, the rate limit among them,
+            // came before anything was sent; after any other failure nobody
+            // knows.
+            Err(e @ (Error::Transport(_) | Error::Api { status: 500.., .. })) => {
                 eprintln!("emx: {e}; trying again in {backoff}s");
                 std::thread::sleep(std::time::Duration::from_secs(backoff));
                 backoff = (backoff * 2).min(60);
