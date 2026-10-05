@@ -1,11 +1,17 @@
 //! The Rust side of the app: holds the token, talks to EMX through the
 //! SDK, and follows the account so the window hears about new mail. The
 //! window never sees the token; it asks for what it needs by name.
+//!
+//! The SDK's calls block, a send for up to two and a half minutes. Every
+//! command is therefore async and runs its call on a thread kept for
+//! blocking work: a plain command runs on the main thread, and the
+//! window would freeze while it waits.
 
 use emx_sdk::{Changes, Client, Contact, Draft, Error, FullMessage, Mailbox, Me, Message, Page};
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -14,7 +20,47 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct App {
     client: Option<Client>,
     /// Ends the watcher of the previous sign-in.
-    watching: Option<Arc<std::sync::atomic::AtomicBool>>,
+    watching: Option<Arc<AtomicBool>>,
+    /// Counts sign-ins begun and sign-outs. A sign-in takes a call to
+    /// EMX, and the window can sign out meanwhile; the sign-in only
+    /// takes effect if nothing came after it began.
+    generation: u64,
+}
+
+impl App {
+    /// Begins a sign-in and answers its number.
+    fn begin(&mut self) -> u64 {
+        self.generation += 1;
+        self.generation
+    }
+
+    /// Completes sign-in `n` with its client and answers the flag that
+    /// ends its watchers, or nothing when a sign-out or a newer sign-in
+    /// came since it began.
+    fn complete(&mut self, n: u64, client: Client) -> Option<Arc<AtomicBool>> {
+        if n != self.generation {
+            return None;
+        }
+        self.stop_watching();
+        self.client = Some(client);
+        let stop = Arc::new(AtomicBool::new(false));
+        self.watching = Some(stop.clone());
+        Some(stop)
+    }
+
+    /// Forgets the client, and makes any sign-in under way come to
+    /// nothing.
+    fn sign_out(&mut self) {
+        self.generation += 1;
+        self.client = None;
+        self.stop_watching();
+    }
+
+    fn stop_watching(&mut self) {
+        if let Some(stop) = self.watching.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
 }
 
 type Shared = Mutex<App>;
@@ -69,12 +115,31 @@ impl From<String> for Failure {
 
 type Outcome<T> = Result<T, Failure>;
 
-fn client(state: &State<Shared>) -> Outcome<Client> {
-    state.lock().unwrap().client.clone().ok_or_else(|| Failure {
+fn signed_out() -> Failure {
+    Failure {
         code: "signed_out".into(),
         message: "Not signed in.".into(),
         retryable: false,
-    })
+    }
+}
+
+fn client(state: &Shared) -> Outcome<Client> {
+    state.lock().unwrap().client.clone().ok_or_else(signed_out)
+}
+
+/// Runs `f`, which blocks, on a thread kept for blocking work, so that
+/// neither the main thread nor the async runtime's few threads wait for
+/// the network.
+async fn blocking<T, E>(f: impl FnOnce() -> Result<T, E> + Send + 'static) -> Outcome<T>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+    Failure: From<E>,
+{
+    match tauri::async_runtime::spawn_blocking(f).await {
+        Ok(result) => result.map_err(Failure::from),
+        Err(e) => Err(<Failure as From<String>>::from(e.to_string())),
+    }
 }
 
 // --- The token on disk ---------------------------------------------------
@@ -109,18 +174,35 @@ fn load_token(app: &AppHandle) -> Option<(String, String)> {
 
 // --- Sign in -------------------------------------------------------------
 
-fn connect(app: &AppHandle, state: &State<Shared>, base_url: &str, token: &str) -> Outcome<Me> {
-    let c = Client::with_base_url(base_url, token)
-        .map_err(Failure::from)?
-        .user_agent(&format!("emx-desktop/{}", env!("CARGO_PKG_VERSION")));
-    let me = c.me()?;
+/// Signs in with a token: asks EMX who it belongs to, then starts the
+/// watchers. With `keep`, the token is written to disk as well, in the
+/// same step, so that a sign-out meanwhile cannot leave it behind.
+async fn connect(
+    app: &AppHandle,
+    state: &Shared,
+    base_url: String,
+    token: String,
+    keep: bool,
+) -> Outcome<Me> {
+    let n = state.lock().unwrap().begin();
+    let (c, me) = blocking({
+        let (base_url, token) = (base_url.clone(), token.clone());
+        move || {
+            let c = Client::with_base_url(&base_url, &token)?
+                .user_agent(&format!("emx-desktop/{}", env!("CARGO_PKG_VERSION")));
+            let me = c.me()?;
+            Ok::<_, Error>((c, me))
+        }
+    })
+    .await?;
     let mut s = state.lock().unwrap();
-    if let Some(stop) = s.watching.take() {
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if n != s.generation {
+        return Err(signed_out());
     }
-    s.client = Some(c.clone());
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    s.watching = Some(stop.clone());
+    if keep {
+        save_token(app, &base_url, &token)?;
+    }
+    let stop = s.complete(n, c.clone()).ok_or_else(signed_out)?;
     drop(s);
     for account in &me.accounts {
         watch(app.clone(), c.clone(), account.id.clone(), stop.clone());
@@ -130,36 +212,31 @@ fn connect(app: &AppHandle, state: &State<Shared>, base_url: &str, token: &str) 
 
 /// Signs in with a token and keeps it for next time.
 #[tauri::command]
-fn sign_in(app: AppHandle, state: State<Shared>, base_url: String, token: String) -> Outcome<Me> {
+async fn sign_in(app: AppHandle, state: State<'_, Shared>, base_url: String, token: String) -> Outcome<Me> {
     let base = if base_url.trim().is_empty() {
         emx_sdk::DEFAULT_BASE_URL.to_string()
     } else {
         base_url
     };
-    let me = connect(&app, &state, &base, token.trim())?;
-    save_token(&app, &base, token.trim())?;
-    Ok(me)
+    connect(&app, &state, base, token.trim().to_string(), true).await
 }
 
 /// Signs in with the kept token, if there is one. A failure that is
 /// `retryable` leaves the token where it is: the window says it is
 /// offline and calls this again, instead of asking to sign in.
 #[tauri::command]
-fn resume(app: AppHandle, state: State<Shared>) -> Outcome<Option<Me>> {
+async fn resume(app: AppHandle, state: State<'_, Shared>) -> Outcome<Option<Me>> {
     match load_token(&app) {
-        Some((base, token)) => connect(&app, &state, &base, &token).map(Some),
+        Some((base, token)) => connect(&app, &state, base, token, false).await.map(Some),
         None => Ok(None),
     }
 }
 
 /// Forgets the token here. Revoking it is done in the web client.
 #[tauri::command]
-fn sign_out(app: AppHandle, state: State<Shared>) -> Outcome<()> {
+async fn sign_out(app: AppHandle, state: State<'_, Shared>) -> Outcome<()> {
     let mut s = state.lock().unwrap();
-    s.client = None;
-    if let Some(stop) = s.watching.take() {
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    s.sign_out();
     if let Ok(p) = token_path(&app) {
         let _ = fs::remove_file(p);
     }
@@ -169,13 +246,15 @@ fn sign_out(app: AppHandle, state: State<Shared>) -> Outcome<()> {
 // --- Mail ----------------------------------------------------------------
 
 #[tauri::command]
-fn me(state: State<Shared>) -> Outcome<Me> {
-    Ok(client(&state)?.me()?)
+async fn me(state: State<'_, Shared>) -> Outcome<Me> {
+    let c = client(&state)?;
+    blocking(move || c.me()).await
 }
 
 #[tauri::command]
-fn mailboxes(state: State<Shared>, account: String) -> Outcome<Vec<Mailbox>> {
-    Ok(client(&state)?.mailboxes(&account)?)
+async fn mailboxes(state: State<'_, Shared>, account: String) -> Outcome<Vec<Mailbox>> {
+    let c = client(&state)?;
+    blocking(move || c.mailboxes(&account)).await
 }
 
 #[derive(Serialize)]
@@ -185,8 +264,14 @@ struct MessagePage {
 }
 
 #[tauri::command]
-fn messages(state: State<Shared>, account: String, mailbox: String, cursor: String) -> Outcome<MessagePage> {
-    let Page { items, cursor } = client(&state)?.messages(&account, &mailbox, 50, &cursor)?;
+async fn messages(
+    state: State<'_, Shared>,
+    account: String,
+    mailbox: String,
+    cursor: String,
+) -> Outcome<MessagePage> {
+    let c = client(&state)?;
+    let Page { items, cursor } = blocking(move || c.messages(&account, &mailbox, 50, &cursor)).await?;
     Ok(MessagePage {
         messages: items,
         cursor,
@@ -194,60 +279,75 @@ fn messages(state: State<Shared>, account: String, mailbox: String, cursor: Stri
 }
 
 #[tauri::command]
-fn message(state: State<Shared>, account: String, id: String) -> Outcome<FullMessage> {
-    Ok(client(&state)?.message(&account, &id)?)
+async fn message(state: State<'_, Shared>, account: String, id: String) -> Outcome<FullMessage> {
+    let c = client(&state)?;
+    blocking(move || c.message(&account, &id)).await
 }
 
 #[tauri::command]
-fn thread(state: State<Shared>, account: String, id: String) -> Outcome<Vec<Message>> {
-    Ok(client(&state)?.thread(&account, &id)?)
+async fn thread(state: State<'_, Shared>, account: String, id: String) -> Outcome<Vec<Message>> {
+    let c = client(&state)?;
+    blocking(move || c.thread(&account, &id)).await
 }
 
 #[tauri::command]
-fn search(state: State<Shared>, account: String, query: String) -> Outcome<Vec<Message>> {
-    Ok(client(&state)?.search(&account, &query)?)
+async fn search(state: State<'_, Shared>, account: String, query: String) -> Outcome<Vec<Message>> {
+    let c = client(&state)?;
+    blocking(move || c.search(&account, &query)).await
 }
 
 #[tauri::command]
-fn changes(state: State<Shared>, account: String, since: i64) -> Outcome<Changes> {
-    Ok(client(&state)?.changes(&account, since)?)
+async fn changes(state: State<'_, Shared>, account: String, since: i64) -> Outcome<Changes> {
+    let c = client(&state)?;
+    blocking(move || c.changes(&account, since)).await
+}
+
+fn strs(v: &[String]) -> Vec<&str> {
+    v.iter().map(String::as_str).collect()
 }
 
 #[tauri::command]
-fn keywords(
-    state: State<Shared>,
+async fn keywords(
+    state: State<'_, Shared>,
     account: String,
     ids: Vec<String>,
     add: Vec<String>,
     remove: Vec<String>,
 ) -> Outcome<Vec<String>> {
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-    let add: Vec<&str> = add.iter().map(String::as_str).collect();
-    let remove: Vec<&str> = remove.iter().map(String::as_str).collect();
-    Ok(client(&state)?.keywords(&account, &ids, &add, &remove)?)
+    let c = client(&state)?;
+    blocking(move || c.keywords(&account, &strs(&ids), &strs(&add), &strs(&remove))).await
 }
 
 #[tauri::command]
-fn move_messages(
-    state: State<Shared>,
+async fn move_messages(
+    state: State<'_, Shared>,
     account: String,
     ids: Vec<String>,
     to: String,
 ) -> Outcome<Vec<String>> {
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-    Ok(client(&state)?.r#move(&account, &ids, &to)?)
+    let c = client(&state)?;
+    blocking(move || c.r#move(&account, &strs(&ids), &to)).await
 }
 
 #[tauri::command]
-fn delete_messages(state: State<Shared>, account: String, ids: Vec<String>) -> Outcome<Vec<String>> {
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-    Ok(client(&state)?.delete(&account, &ids)?)
+async fn delete_messages(
+    state: State<'_, Shared>,
+    account: String,
+    ids: Vec<String>,
+) -> Outcome<Vec<String>> {
+    let c = client(&state)?;
+    blocking(move || c.delete(&account, &strs(&ids))).await
 }
 
 #[tauri::command]
-fn snooze(state: State<Shared>, account: String, ids: Vec<String>, until: String) -> Outcome<Vec<String>> {
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-    Ok(client(&state)?.snooze(&account, &ids, &until)?)
+async fn snooze(
+    state: State<'_, Shared>,
+    account: String,
+    ids: Vec<String>,
+    until: String,
+) -> Outcome<Vec<String>> {
+    let c = client(&state)?;
+    blocking(move || c.snooze(&account, &strs(&ids), &until)).await
 }
 
 /// A part of a message, base64, with its content type, for saving or
@@ -259,8 +359,9 @@ struct PartData {
 }
 
 #[tauri::command]
-fn part(state: State<Shared>, account: String, id: String, part: String) -> Outcome<PartData> {
-    let (data, content_type) = client(&state)?.part(&account, &id, &part)?;
+async fn part(state: State<'_, Shared>, account: String, id: String, part: String) -> Outcome<PartData> {
+    let c = client(&state)?;
+    let (data, content_type) = blocking(move || c.part(&account, &id, &part)).await?;
     Ok(PartData {
         content_type,
         base64: base64(&data),
@@ -270,28 +371,34 @@ fn part(state: State<Shared>, account: String, id: String, part: String) -> Outc
 /// Writes a part into the Downloads folder, under its own name, without
 /// replacing a file that is there already. Answers with the path.
 #[tauri::command]
-fn save_part(
+async fn save_part(
     app: AppHandle,
-    state: State<Shared>,
+    state: State<'_, Shared>,
     account: String,
     id: String,
     part: String,
     filename: String,
 ) -> Outcome<String> {
-    let (data, _) = client(&state)?.part(&account, &id, &part)?;
+    let c = client(&state)?;
+    let (data, _) = blocking(move || c.part(&account, &id, &part)).await?;
     let dir = app.path().download_dir().map_err(|e| e.to_string())?;
-    let name = safe_filename(&filename);
-    let mut path = dir.join(&name);
+    blocking(move || save_new(&dir, &safe_filename(&filename), &data)).await
+}
+
+/// Writes `data` to `name` in `dir`, or to `name (2)` and so on when
+/// that is taken, and answers the path.
+fn save_new(dir: &std::path::Path, name: &str, data: &[u8]) -> Result<String, String> {
+    let mut path = dir.join(name);
     let mut n = 1;
     while path.exists() {
         n += 1;
         let (stem, ext) = match name.rsplit_once('.') {
             Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
-            _ => (name.clone(), String::new()),
+            _ => (name.to_string(), String::new()),
         };
         path = dir.join(format!("{stem} ({n}){ext}"));
     }
-    fs::write(&path, &data).map_err(|e| format!("{}: {e}", path.display()))?;
+    fs::write(&path, data).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path.display().to_string())
 }
 
@@ -317,18 +424,26 @@ fn safe_filename(name: &str) -> String {
 }
 
 #[tauri::command]
-fn send(state: State<Shared>, draft: Draft) -> Outcome<i64> {
-    Ok(client(&state)?.send_mail(&draft)?.recipients)
+async fn send(state: State<'_, Shared>, draft: Draft) -> Outcome<i64> {
+    let c = client(&state)?;
+    Ok(blocking(move || c.send_mail(&draft)).await?.recipients)
 }
 
 #[tauri::command]
-fn contacts(state: State<Shared>, account: String, contact_state: String) -> Outcome<Vec<Contact>> {
-    Ok(client(&state)?.contacts(&account, &contact_state)?)
+async fn contacts(state: State<'_, Shared>, account: String, contact_state: String) -> Outcome<Vec<Contact>> {
+    let c = client(&state)?;
+    blocking(move || c.contacts(&account, &contact_state)).await
 }
 
 #[tauri::command]
-fn set_contact(state: State<Shared>, account: String, address: String, contact_state: String) -> Outcome<()> {
-    Ok(client(&state)?.set_contact(&account, &address, &contact_state, "")?)
+async fn set_contact(
+    state: State<'_, Shared>,
+    account: String,
+    address: String,
+    contact_state: String,
+) -> Outcome<()> {
+    let c = client(&state)?;
+    blocking(move || c.set_contact(&account, &address, &contact_state, "")).await
 }
 
 // --- Following the account -------------------------------------------------
@@ -348,11 +463,11 @@ struct ChangeNotice {
 /// by announcing the current modseq; the window hears of it only when it
 /// is above the last one passed on, which is when a change was missed
 /// while the stream was down.
-fn watch(app: AppHandle, client: Client, account: String, stop: Arc<std::sync::atomic::AtomicBool>) {
+fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         let mut pause = 1u64;
         let mut last = 0i64;
-        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        while !stop.load(Ordering::Relaxed) {
             let opened = std::time::Instant::now();
             let stream = match client.events(&account) {
                 Ok(s) => s,
@@ -366,7 +481,7 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<std::sync::a
                 }
             };
             for event in stream {
-                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                if stop.load(Ordering::Relaxed) {
                     return;
                 }
                 match event {
@@ -451,6 +566,60 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plain command runs on the main thread, and the window freezes
+    /// while it waits for EMX: every command here must be async.
+    #[test]
+    fn every_command_is_async() {
+        let source = include_str!("lib.rs");
+        let mut commands = 0;
+        let mut lines = source.lines();
+        while let Some(line) = lines.next() {
+            if line.trim_start().starts_with("#[tauri::command") {
+                commands += 1;
+                let next = lines.next().unwrap_or("");
+                assert!(next.trim_start().starts_with("async fn "), "not async: {next}");
+            }
+        }
+        assert!(commands >= 19, "found {commands} commands");
+    }
+
+    #[test]
+    fn blocking_work_runs_away_from_the_caller() {
+        let here = std::thread::current().id();
+        let there = tauri::async_runtime::block_on(blocking(|| Ok::<_, String>(std::thread::current().id())))
+            .unwrap();
+        assert_ne!(here, there);
+    }
+
+    fn a_client() -> Client {
+        Client::with_base_url("http://127.0.0.1:9", "emx_test").unwrap()
+    }
+
+    #[test]
+    fn a_sign_in_under_way_comes_to_nothing_after_sign_out() {
+        let mut app = App::default();
+        let n = app.begin();
+        app.sign_out();
+        assert!(app.complete(n, a_client()).is_none());
+        assert!(app.client.is_none());
+        assert!(app.watching.is_none());
+    }
+
+    #[test]
+    fn the_newest_sign_in_wins() {
+        let mut app = App::default();
+        let older = app.begin();
+        let newer = app.begin();
+        let stop = app.complete(newer, a_client()).unwrap();
+        assert!(app.complete(older, a_client()).is_none());
+        assert!(
+            !stop.load(Ordering::Relaxed),
+            "the newer sign-in's watchers go on"
+        );
+        app.sign_out();
+        assert!(stop.load(Ordering::Relaxed), "sign-out ends the watchers");
+    }
 
     #[test]
     fn failures_say_whether_signing_in_again_helps() {

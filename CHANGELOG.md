@@ -75,6 +75,11 @@
   once at most. `emx_sdk::idempotency_key()` makes a key, and
   `send_mail_with_key` refuses an empty key, one over 200 characters
   and one with characters a header cannot carry, before sending.
+- The desktop window no longer freezes while it waits for EMX. Every
+  call ran on the main thread, so a send (up to two and a half minutes)
+  or the offline screen's repeated attempts to connect held the window
+  still. A sign-in that is still under way when the person signs out
+  now comes to nothing instead of signing them in again.
 
 ## 0.1.0
 
