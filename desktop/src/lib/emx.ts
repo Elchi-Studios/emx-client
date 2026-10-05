@@ -111,11 +111,17 @@ export interface Draft {
 export interface Failure {
   code: string;
   message: string;
+  /** The same call may work in a moment: the network or EMX is away. */
+  retryable?: boolean;
 }
 
 export function describe(e: unknown): string {
   if (e && typeof e === 'object' && 'message' in e) return String((e as Failure).message);
   return String(e);
+}
+
+export function retryable(e: unknown): boolean {
+  return !!(e && typeof e === 'object' && (e as Failure).retryable);
 }
 
 // The service leaves empty lists out of its JSON. The Rust side fills

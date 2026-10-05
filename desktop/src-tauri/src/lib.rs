@@ -19,23 +19,40 @@ struct App {
 
 type Shared = Mutex<App>;
 
-/// An error the window can show.
-#[derive(Serialize)]
+/// An error the window can show. `retryable` says that the same call may
+/// work in a moment: the network or the service is away, which is not a
+/// reason to sign in again.
+#[derive(Serialize, Debug)]
 struct Failure {
     code: String,
     message: String,
+    retryable: bool,
 }
 
 impl From<Error> for Failure {
     fn from(e: Error) -> Self {
+        let retryable = e.is_retryable();
+        let (code, message) = match &e {
+            Error::Api {
+                status: 401, code, ..
+            } => (
+                code.clone(),
+                "The token was refused. Sign in again with a current one.".into(),
+            ),
+            Error::Transport(_) => (
+                "offline".into(),
+                "EMX cannot be reached. Check the internet connection and try again.".into(),
+            ),
+            Error::Api { status, code, .. } if retryable && *status >= 500 => (
+                code.clone(),
+                "EMX is not answering right now. Try again in a moment.".into(),
+            ),
+            _ => (e.code().unwrap_or("error").to_string(), e.to_string()),
+        };
         Failure {
-            code: e.code().unwrap_or("error").to_string(),
-            message: match &e {
-                Error::Api { status: 401, .. } => {
-                    "The token was refused. Sign in again with a current one.".into()
-                }
-                _ => e.to_string(),
-            },
+            code,
+            message,
+            retryable,
         }
     }
 }
@@ -45,6 +62,7 @@ impl From<String> for Failure {
         Failure {
             code: "app".into(),
             message,
+            retryable: false,
         }
     }
 }
@@ -55,6 +73,7 @@ fn client(state: &State<Shared>) -> Outcome<Client> {
     state.lock().unwrap().client.clone().ok_or_else(|| Failure {
         code: "signed_out".into(),
         message: "Not signed in.".into(),
+        retryable: false,
     })
 }
 
@@ -122,7 +141,9 @@ fn sign_in(app: AppHandle, state: State<Shared>, base_url: String, token: String
     Ok(me)
 }
 
-/// Signs in with the kept token, if there is one.
+/// Signs in with the kept token, if there is one. A failure that is
+/// `retryable` leaves the token where it is: the window says it is
+/// offline and calls this again, instead of asking to sign in.
 #[tauri::command]
 fn resume(app: AppHandle, state: State<Shared>) -> Outcome<Option<Me>> {
     match load_token(&app) {
@@ -425,4 +446,47 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("the app could not start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failures_say_whether_signing_in_again_helps() {
+        let offline = Failure::from(Error::Transport("io: Connection refused (os error 111)".into()));
+        assert_eq!(offline.code, "offline");
+        assert!(offline.retryable);
+        assert!(!offline.message.contains("os error"), "{}", offline.message);
+
+        let refused = Failure::from(Error::Api {
+            status: 401,
+            code: "bad_token".into(),
+            message: "the token is not valid".into(),
+            request_id: None,
+            retry_after: None,
+        });
+        assert_eq!(refused.code, "bad_token");
+        assert!(!refused.retryable);
+
+        let down = Failure::from(Error::Api {
+            status: 503,
+            code: "http_503".into(),
+            message: "HTTP 503".into(),
+            request_id: None,
+            retry_after: None,
+        });
+        assert!(down.retryable);
+        assert!(!down.message.contains("HTTP 503"));
+
+        let scope = Failure::from(Error::Api {
+            status: 403,
+            code: "scope".into(),
+            message: "this token lacks the mail:write scope".into(),
+            request_id: None,
+            retry_after: None,
+        });
+        assert!(!scope.retryable);
+        assert!(scope.message.contains("mail:write"));
+    }
 }
