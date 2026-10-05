@@ -20,6 +20,9 @@ class State {
   composing = $state<null | { to?: string; subject?: string; text?: string; inReplyTo?: string; references?: string[] }>(null);
   notice = $state('');
   problem = $state('');
+  // A question waiting for an answer, such as "Delete for good?". While
+  // one is open, the keys of the window and the composer do nothing.
+  asking = $state<null | { text: string; confirm: string; answer: (ok: boolean) => void }>(null);
   modseq: Record<string, number> = {};
   private busy: Record<string, boolean> = {};
 
@@ -35,6 +38,19 @@ class State {
   say(text: string): void {
     this.notice = text;
     setTimeout(() => (this.notice = ''), 4000);
+  }
+
+  /// Asks before something that cannot be undone. Resolves true when the
+  /// person confirms; another question replacing this one answers no.
+  ask(text: string, confirm: string): Promise<boolean> {
+    this.asking?.answer(false);
+    return new Promise((resolve) => {
+      const answer = (ok: boolean): void => {
+        if (this.asking?.answer === answer) this.asking = null;
+        resolve(ok);
+      };
+      this.asking = { text, confirm, answer };
+    });
   }
 
   fail(e: unknown): void {
@@ -167,6 +183,8 @@ class State {
 
   async trash(m: Message): Promise<void> {
     if (this.mailbox?.role === 'trash') {
+      // In Trash this is the second step and cannot be undone.
+      if (!(await this.ask('Delete this message for good? It cannot be brought back.', 'Delete'))) return;
       try {
         await emx.delete(this.account, [m.id]);
         this.remove(m.id);

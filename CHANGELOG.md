@@ -48,6 +48,11 @@
   without a network: it says it is offline, keeps the sign-in, and
   connects on its own when EMX can be reached again. Errors from a lost
   connection read in plain words instead of "os error 111".
+- The desktop app asks before deleting a message for good in Trash and
+  before discarding a composer with text in it (Esc, a click beside it
+  or Discard). Backspace no longer trashes the open message, and the
+  list's keys do nothing while the composer is open or a select has
+  the focus.
 - The README examples compile, and are compiled with the doctests from
   now on. The SDK's README says how to depend on it.
 - The oldest Rust that builds the SDK and the command line is 1.85, as

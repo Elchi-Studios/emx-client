@@ -26,8 +26,11 @@ Tauri's prerequisites per system are at
   with no scripts. Remote images stay out until asked for; inline images
   are fetched through the Rust side.
 
-Keys: `j` `k` move, `e` archive, `#` trash, `u` read or unread, `s` flag,
-`r` reply, `a` reply all, `c` new message, `/` search, `Esc` close.
+Keys: `j` `k` move, `e` archive, `#` or `Delete` trash, `u` read or
+unread, `s` flag, `r` reply, `a` reply all, `c` new message, `/` search,
+`Esc` close. They do nothing while the composer is open. In Trash,
+deleting for good asks first, and closing a composer with something
+written in it asks before the text is thrown away.
 
 ## What is not here yet
 

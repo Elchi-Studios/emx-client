@@ -50,16 +50,32 @@
     }
   }
 
+  // Whether anything was written or changed since the composer opened.
+  function changed(): boolean {
+    return to !== (start.to ?? '') || cc !== '' || subject !== (start.subject ?? '') || text !== (start.text ?? '') || files.length > 0;
+  }
+
+  // Closes the composer, asking first when that would throw text away.
+  async function close(): Promise<void> {
+    if (busy) return;
+    if (changed() && !(await app.ask('Discard this message? What you wrote is lost.', 'Discard'))) return;
+    app.composing = null;
+  }
+
   let form: HTMLFormElement;
   function key(e: KeyboardEvent): void {
-    if (e.key === 'Escape') app.composing = null;
+    if (app.asking) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') form.requestSubmit();
   }
 </script>
 
 <svelte:window onkeydown={key} />
 
-<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (app.composing = null)}>
+<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && close()}>
   <form class="sheet" onsubmit={send} bind:this={form}>
     <div class="row">
       <label for="from">From</label>
@@ -91,7 +107,7 @@
       <label class="btn">Attach <input type="file" multiple hidden onchange={attach} /></label>
       <span class="muted small">Ctrl+Enter sends, Esc closes</span>
       <span class="grow"></span>
-      <button type="button" class="btn quiet" onclick={() => (app.composing = null)}>Discard</button>
+      <button type="button" class="btn quiet" onclick={close}>Discard</button>
       <button class="btn primary" disabled={busy || !to}>{busy ? 'Sending' : 'Send'}</button>
     </div>
   </form>

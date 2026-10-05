@@ -5,6 +5,7 @@
   import SignIn from '$lib/SignIn.svelte';
   import Shell from '$lib/Shell.svelte';
   import Offline from '$lib/Offline.svelte';
+  import Confirm from '$lib/Confirm.svelte';
 
   let ready = $state(false);
   // Set while a kept sign-in cannot reach EMX: the person is still
@@ -68,6 +69,8 @@
 {:else}
   <SignIn />
 {/if}
+
+{#if app.asking}<Confirm />{/if}
 
 {#if app.notice}<div class="toast">{app.notice}</div>{/if}
 {#if app.problem}<div class="toast problem">{app.problem}</div>{/if}

@@ -6,10 +6,13 @@
   import MessageView from './MessageView.svelte';
   import Composer from './Composer.svelte';
 
-  // Keys, when nothing is being typed.
+  // Keys, when nothing is being typed or chosen, and no composer or
+  // question is open over the list: a key meant for those must not act
+  // on the message behind them.
   function keys(e: KeyboardEvent): void {
+    if (app.composing || app.asking) return;
     const t = e.target as HTMLElement;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const cur = app.open?.message;
     switch (e.key) {
@@ -30,9 +33,9 @@
       case 'e':
         if (cur) app.moveTo(cur, 'archive');
         break;
+      // Not Backspace: it is pressed by reflex, and in Trash this deletes.
       case '#':
       case 'Delete':
-      case 'Backspace':
         if (cur) app.trash(cur);
         break;
       case 'u':
