@@ -4,19 +4,21 @@ Thank you for looking. A few things keep this repository easy to work in.
 
 ## Before a pull request
 
+These are the steps CI runs:
+
 - `cargo fmt --all --check` and
   `cargo clippy --workspace --exclude emx-desktop --all-targets -- -D warnings` pass.
 - `cargo test --workspace --exclude emx-desktop` passes. A change to the
   SDK's calls comes with a test in `sdk/tests/client.rs` against the
   scripted server there.
 - For a change to the desktop app: `npm run check` and `npm run build`
-  in `desktop/`, then `cargo clippy -p emx-desktop -- -D warnings`, which
-  needs Tauri's prerequisites for your system. The app was run once with
-  `npm run tauri dev`.
+  in `desktop/`, then `cargo clippy -p emx-desktop --all-targets -- -D warnings`
+  and `cargo test -p emx-desktop`, which need Tauri's prerequisites for
+  your system.
 
-These are the steps CI runs.
-- Commits are small and say what changed and why, in plain English.
-  Squash the fixups.
+A change to the desktop app has also been tried once with
+`npm run tauri dev`, which CI cannot do. Commits are small and say what
+changed and why, in plain English. Squash the fixups.
 
 ## What fits
 
