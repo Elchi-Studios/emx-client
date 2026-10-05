@@ -832,16 +832,7 @@ fn catch_up(
 }
 
 fn run_exec(cmd: &str, changes: &emx_sdk::Changes) {
-    let (shell, flag) = if cfg!(windows) {
-        ("cmd", "/C")
-    } else {
-        ("sh", "-c")
-    };
-    let child = std::process::Command::new(shell)
-        .arg(flag)
-        .arg(cmd)
-        .stdin(std::process::Stdio::piped())
-        .spawn();
+    let child = shell(cmd).stdin(std::process::Stdio::piped()).spawn();
     match child {
         Ok(mut child) => {
             if let Some(mut stdin) = child.stdin.take() {
@@ -851,6 +842,27 @@ fn run_exec(cmd: &str, changes: &emx_sdk::Changes) {
         }
         Err(e) => eprintln!("emx: --exec: {e}"),
     }
+}
+
+/// The system's shell, to run a command line as it was typed.
+#[cfg(not(windows))]
+fn shell(cmd: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("sh");
+    c.arg("-c").arg(cmd);
+    c
+}
+
+/// On Windows the line goes to cmd verbatim. Passed as an ordinary
+/// argument, it would be quoted for a program, with a backslash before
+/// every inner quote, which cmd does not understand. With `/s`, cmd
+/// removes exactly the outer pair of quotes and runs what is inside as
+/// written; `/d` leaves out any AutoRun command set in the registry.
+#[cfg(windows)]
+fn shell(cmd: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = std::process::Command::new("cmd");
+    c.raw_arg(format!("/d /s /c \"{cmd}\""));
+    c
 }
 
 // --- Anything ------------------------------------------------------------

@@ -61,6 +61,9 @@
 - The oldest Rust that builds the SDK and the command line is 1.85, as
   their dependencies require, not 1.80; CI checks it. The desktop app
   needs 1.88.
+- `emx watch --exec` on Windows hands the command line to cmd as it was
+  typed. It used to be quoted for a program, with a backslash before
+  each inner quote, so a command with a quoted path did not run.
 
 ## 0.1.0
 

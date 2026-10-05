@@ -39,6 +39,20 @@ fn account(path: &str) -> (&'static str, String) {
     )
 }
 
+/// A command for `--exec` that appends what it reads to `file`, one line
+/// per run, in the language of the system's shell.
+#[cfg(not(windows))]
+fn append_stdin_to(file: &std::path::Path) -> String {
+    format!("cat >> '{0}'; echo >> '{0}'", file.display())
+}
+
+/// cmd has no `cat`; `sort` copies its input, a single line here, and
+/// ends it with a line break. The quotes keep a path with spaces whole.
+#[cfg(windows)]
+fn append_stdin_to(file: &std::path::Path) -> String {
+    format!("sort >> \"{}\"", file.display())
+}
+
 #[test]
 fn watch_reports_real_changes_only() {
     let base = server(account);
@@ -46,7 +60,7 @@ fn watch_reports_real_changes_only() {
     std::fs::create_dir_all(&dir).unwrap();
     let ran = dir.join("exec.out");
     let _ = std::fs::remove_file(&ran);
-    let exec = format!("cat >> '{}'; echo >> '{}'", ran.display(), ran.display());
+    let exec = append_stdin_to(&ran);
     let mut child = emx(&base)
         .args(["--json", "watch", "--exec", &exec])
         .stdout(Stdio::piped())
