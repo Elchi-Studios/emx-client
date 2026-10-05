@@ -53,6 +53,9 @@
   or Discard). Backspace no longer trashes the open message, and the
   list's keys do nothing while the composer is open or a select has
   the focus.
+- The desktop app shows its licence notice and where its source is, on
+  the sign-in card and in the empty reading pane, as the AGPL asks of an
+  interactive program.
 - The README examples compile, and are compiled with the doctests from
   now on. The SDK's README says how to depend on it.
 - The oldest Rust that builds the SDK and the command line is 1.85, as

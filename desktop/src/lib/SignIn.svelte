@@ -46,6 +46,7 @@
     {#if error}<p class="error">{error}</p>{/if}
     <button class="btn primary" disabled={busy || !token}>{busy ? 'Signing in' : 'Sign in'}</button>
     <p class="muted small">Made by Elchi Studios, Zug. <a href="https://emxmail.ch" target="_blank" rel="noopener">emxmail.ch</a></p>
+    <p class="muted small">Free software under the GNU Affero General Public License 3.0, with no warranty. The source is at <span class="mono">github.com/Elchi-Studios/emx-client</span>.</p>
   </form>
 </div>
 

@@ -62,6 +62,7 @@
     <div class="empty muted">
       <p>Nothing open.</p>
       <p class="small"><kbd>j</kbd> <kbd>k</kbd> move, <kbd>e</kbd> archive, <kbd>#</kbd> trash, <kbd>r</kbd> reply, <kbd>c</kbd> new, <kbd>/</kbd> search</p>
+      <p class="small legal">EMX for the desktop, by Elchi Studios. Free software under the GNU Affero General Public License 3.0, with no warranty. The source is at <span class="mono">github.com/Elchi-Studios/emx-client</span>.</p>
     </div>
   {:else}
     {@const m = app.open.message}
@@ -125,7 +126,13 @@
     height: 100%;
     display: grid;
     place-items: center;
+    align-content: center;
+    gap: 4px;
     text-align: center;
+  }
+  .legal {
+    max-width: 360px;
+    margin-top: 24px;
   }
   header {
     padding: 16px 20px 12px;

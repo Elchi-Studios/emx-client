@@ -12,6 +12,8 @@ npm run tauri build    # a bundle for this system
 
 Tauri's prerequisites per system are at
 [tauri.app/start/prerequisites](https://tauri.app/start/prerequisites/).
+There is no signed installer or download yet; until there is, the app
+is built from source as above.
 
 ## How it is put together
 
