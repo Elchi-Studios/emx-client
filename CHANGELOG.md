@@ -64,6 +64,11 @@
 - `emx watch --exec` on Windows hands the command line to cmd as it was
   typed. It used to be quoted for a program, with a backslash before
   each inner quote, so a command with a quoted path did not run.
+- An event stream that is given up after a minute of silence now
+  closes its connection. The thread reading it used to wait on the dead
+  connection, and keep its socket, for over an hour, once for every
+  reconnect. ureq is held to 3.4, since this uses its transport
+  traits, which are outside its semver promise.
 
 ## 0.1.0
 

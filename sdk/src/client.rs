@@ -22,6 +22,10 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(150);
 #[derive(Clone)]
 pub struct Client {
     agent: ureq::Agent,
+    /// The agent for event streams, whose reads give up after `idle`.
+    events_agent: ureq::Agent,
+    /// How long an event stream may stay silent; see [`Events`].
+    idle: Duration,
     base: String,
     token: String,
     user_agent: String,
@@ -66,6 +70,8 @@ impl Client {
             .build();
         Ok(Client {
             agent: config.into(),
+            events_agent: crate::events::agent(crate::events::IDLE),
+            idle: crate::events::IDLE,
             base,
             token: token.to_string(),
             user_agent: format!("emx-sdk/{}", env!("CARGO_PKG_VERSION")),
@@ -77,6 +83,15 @@ impl Client {
     /// when something needs looking into.
     pub fn user_agent(mut self, name: &str) -> Client {
         self.user_agent = format!("{} emx-sdk/{}", name.trim(), env!("CARGO_PKG_VERSION"));
+        self
+    }
+
+    /// The client with a shorter silence for event streams, for tests
+    /// that cannot wait a minute.
+    #[cfg(test)]
+    pub(crate) fn with_idle(mut self, idle: Duration) -> Client {
+        self.events_agent = crate::events::agent(idle);
+        self.idle = idle;
         self
     }
 
@@ -261,11 +276,13 @@ impl Client {
         let url = format!("{}/api/accounts/{}/events", self.base, seg(account));
         // The agent's limit for a whole call would cut the stream off after
         // a minute. A stream gets limits for connecting and for the answer
-        // to begin instead; silence is noticed by `Events` from the missing
-        // keepalives, and the body's limit, above the hour the service
-        // keeps a stream, only bounds a connection that died unnoticed.
+        // to begin instead. Silence is noticed by `Events` from the missing
+        // keepalives, and the events agent gives up a read after the same
+        // time, so the connection of a stream given up is closed and its
+        // reader ends. The body's limit, above the hour the service keeps
+        // a stream, only bounds a stream that keeps talking.
         let resp = self
-            .agent
+            .events_agent
             .get(&url)
             .config()
             .timeout_global(None)
@@ -282,7 +299,10 @@ impl Client {
         if status != 200 {
             return Err(self.refusal(resp));
         }
-        Ok(Events::new(Box::new(resp.into_body().into_reader())))
+        Ok(Events::with_idle(
+            Box::new(resp.into_body().into_reader()),
+            self.idle,
+        ))
     }
 
     // --- The screener ----------------------------------------------------
@@ -733,5 +753,60 @@ fn excerpt(s: &str) -> String {
         format!("{cut}...")
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Event;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+
+    /// A stream that announces its modseq and then says nothing, the way
+    /// one does after the network went away without a word. Once the
+    /// stream is given up, its connection must close: a reader left
+    /// waiting on it would keep the socket and a thread for an hour,
+    /// after every reconnect.
+    #[test]
+    fn a_silent_stream_closes_its_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, closed) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                line.clear();
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n\
+                      event: change\ndata: {\"modseq\": 5}\n\n",
+                )
+                .unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let gone = match stream.read(&mut [0u8; 1]) {
+                Ok(n) => n == 0,
+                Err(e) => !matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ),
+            };
+            let _ = tx.send(gone);
+        });
+        let emx = Client::with_base_url(&base, "emx_test")
+            .unwrap()
+            .with_idle(Duration::from_millis(300));
+        let mut events = emx.events("me").unwrap();
+        assert_eq!(events.next().unwrap().unwrap(), Event::Change { modseq: 5 });
+        assert!(events.next().unwrap().is_err(), "silence ends the stream");
+        drop(events);
+        assert!(
+            closed.recv_timeout(Duration::from_secs(20)).unwrap(),
+            "the connection of the stream given up stayed open"
+        );
     }
 }

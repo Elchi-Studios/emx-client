@@ -2,12 +2,82 @@ use crate::error::Error;
 use std::io::{BufRead, BufReader, Read};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
+// The transport traits are outside ureq's semver promise, which is why
+// the workspace holds ureq to one minor version.
+use ureq::unversioned::resolver::DefaultResolver;
+use ureq::unversioned::transport::{
+    Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport,
+};
 
 /// How long the stream may stay silent before it counts as broken. The
 /// service sends a keepalive every 25 seconds, so a minute without a
 /// line means at least two were lost: the connection is gone, even if
 /// the system has not noticed, as after a laptop wakes up.
-const IDLE: Duration = Duration::from_secs(60);
+pub(crate) const IDLE: Duration = Duration::from_secs(60);
+
+/// The agent for event streams. Its connections give up a read after
+/// `idle` without a byte, the same silence after which [`Events`] ends
+/// the stream. Without that, the thread reading a connection that died
+/// unnoticed would wait in its read, and keep the socket, until the
+/// body's limit of over an hour ran out, once for every reconnect.
+pub(crate) fn agent(idle: Duration) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .build();
+    let connector = DefaultConnector::new().chain(ReadLimit(idle));
+    ureq::Agent::with_parts(config, connector, DefaultResolver::default())
+}
+
+/// Wraps each connection, plain or TLS, in [`Limited`].
+#[derive(Debug)]
+struct ReadLimit(Duration);
+
+impl Connector<Box<dyn Transport>> for ReadLimit {
+    type Out = Limited;
+
+    fn connect(
+        &self,
+        _: &ConnectionDetails,
+        chained: Option<Box<dyn Transport>>,
+    ) -> Result<Option<Limited>, ureq::Error> {
+        Ok(chained.map(|inner| Limited { inner, idle: self.0 }))
+    }
+}
+
+/// A connection whose reads wait at most `idle`, however long the
+/// request's own limits would allow. A read that times out fails, the
+/// reader ends, and the connection is closed.
+#[derive(Debug)]
+struct Limited {
+    inner: Box<dyn Transport>,
+    idle: Duration,
+}
+
+impl Transport for Limited {
+    fn buffers(&mut self) -> &mut dyn Buffers {
+        self.inner.buffers()
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        self.inner.transmit_output(amount, timeout)
+    }
+
+    fn await_input(&mut self, mut timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        if *timeout.after > self.idle {
+            timeout.after = self.idle.into();
+        }
+        self.inner.await_input(timeout)
+    }
+
+    fn is_open(&mut self) -> bool {
+        self.inner.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
+    }
+}
 
 /// One event from the stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,15 +124,11 @@ pub struct Events {
 }
 
 impl Events {
-    pub(crate) fn new(reader: Box<dyn Read + Send>) -> Events {
-        Events::with_idle(reader, IDLE)
-    }
-
     /// Reads the stream on a thread of its own and hands the lines over,
     /// so that waiting for the next one can give up after `idle`. A read
-    /// on a connection that died without a word blocks for as long as
-    /// the request's own timeout allows; the thread ends then, or as
-    /// soon as the next line finds nobody listening.
+    /// on a connection that died without a word fails after the same
+    /// time (see [`agent`]), and the thread ends then, or as soon as the
+    /// next line finds nobody listening.
     pub(crate) fn with_idle(reader: Box<dyn Read + Send>, idle: Duration) -> Events {
         let (tx, rx) = mpsc::sync_channel(64);
         let started = std::thread::Builder::new()
@@ -167,7 +233,7 @@ mod tests {
     #[test]
     fn reads_events_and_skips_keepalives() {
         let feed = ": keepalive\n\nevent: change\ndata: {\"modseq\": 812}\n\n: keepalive\n\nevent: hello\ndata: a\ndata: b\n\n";
-        let mut ev = Events::new(Box::new(std::io::Cursor::new(feed.as_bytes().to_vec())));
+        let mut ev = Events::with_idle(Box::new(std::io::Cursor::new(feed.as_bytes().to_vec())), IDLE);
         assert_eq!(ev.next().unwrap().unwrap(), Event::Change { modseq: 812 });
         assert_eq!(
             ev.next().unwrap().unwrap(),
