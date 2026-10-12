@@ -54,8 +54,36 @@ fn missing_and_stray_arguments_are_usage_errors() {
     assert_eq!(run(&["read", "a", "b"]).0, Some(2));
     assert_eq!(run(&["frobnicate"]).0, Some(2));
     assert_eq!(run(&["list", "--limit", "0"]).0, Some(2));
-    // A well-formed command reaches the network and fails there.
-    assert_eq!(run(&["read", "a"]).0, Some(1));
+    // A well-formed command reaches the network and fails there, with
+    // the status that says the same command may work in a moment.
+    assert_eq!(run(&["read", "a"]).0, Some(4));
+}
+
+#[test]
+fn no_token_has_a_status_of_its_own() {
+    let out = emx(NOWHERE).env("EMX_TOKEN", "").args(["me"]).output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn screener_and_webhook_commands_answer_json() {
+    let base = common::server(|_| ("application/json", "{}".into()));
+    let json = |args: &[&str]| -> serde_json::Value {
+        let out = emx(&base).arg("--json").args(args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).expect("JSON")
+    };
+    assert_eq!(json(&["approve", "anna@example.ch"])["state"], "approved");
+    assert_eq!(json(&["block", "spam@example.ch"])["state"], "blocked");
+    assert_eq!(json(&["forget", "anna@example.ch"])["forgotten"], true);
+    assert_eq!(json(&["webhook", "delete", "w1"])["deleted"], true);
+    assert_eq!(json(&["webhook", "test", "w1"])["pinged"], true);
+    assert_eq!(json(&["webhook", "enable", "w1"])["enabled"], true);
 }
 
 #[test]

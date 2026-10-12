@@ -95,6 +95,11 @@ Options for every command
   --json          machine-readable output
   --version, --help
 
+Exit status: 0 done, 1 refused or failed, 2 a wrong command line, 3 no
+token or a token EMX refused, 4 no network or EMX busy for a moment
+(the same command may work soon), 5 a send that may or may not have
+gone out.
+
 The token comes from ~/.config/emx/config.json (emx login), or from
 EMX_TOKEN and EMX_BASE_URL in the environment. EMX_CA_FILE names a PEM
 file of certificate authorities to trust instead of the bundled ones,
@@ -126,13 +131,28 @@ fn main() -> ExitCode {
     match run(command, &args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(Fail::Usage(e)) => fail_usage(&e),
-        Err(e) => fail(&describe(&e)),
+        Err(e) => {
+            eprintln!("emx: {}", describe(&e));
+            ExitCode::from(status(&e))
+        }
     }
 }
 
-fn fail(msg: &str) -> ExitCode {
-    eprintln!("emx: {msg}");
-    ExitCode::FAILURE
+/// The exit status for a failure, so that a script can tell them apart
+/// without reading the message: 2 the command line, 3 the token (none,
+/// expired or revoked), 4 a passing problem that the same command may
+/// get past in a moment (no network, EMX not answering, the per-minute
+/// rate limit), 5 a send whose outcome is not known, 1 anything else
+/// (EMX refused the request, or a file here could not be read).
+fn status(e: &Fail) -> u8 {
+    match e {
+        Fail::Usage(_) => 2,
+        Fail::NoToken(_) => 3,
+        Fail::Uncertain(_) => 5,
+        Fail::Emx(e) if e.is_unauthorized() => 3,
+        Fail::Emx(e) if e.is_retryable() => 4,
+        Fail::Emx(_) | Fail::Local(_) => 1,
+    }
 }
 
 /// A command line `emx` does not understand ends with status 2, as with
@@ -246,7 +266,7 @@ fn run(command: &str, a: &Args) -> Result<(), Fail> {
     }
     let cfg = config::load().map_err(Fail::Local)?;
     if cfg.token.is_empty() {
-        return Err(Fail::Local("no token; run emx login, or set EMX_TOKEN".into()));
+        return Err(Fail::NoToken("no token; run emx login, or set EMX_TOKEN".into()));
     }
     let emx = trusting(Client::with_base_url(&cfg.base_url, &cfg.token).map_err(local)?)
         .map_err(Fail::Local)?
@@ -280,9 +300,9 @@ fn run(command: &str, a: &Args) -> Result<(), Fail> {
         "snooze" => snooze(&emx, account, &rest, a, json),
         "send" => send(&emx, a, json),
         "contacts" => contacts(&emx, account, a, json),
-        "approve" => contact(&emx, account, &rest, "approved", a),
-        "block" => contact(&emx, account, &rest, "blocked", a),
-        "forget" => forget(&emx, account, &rest),
+        "approve" => contact(&emx, account, &rest, "approved", a, json),
+        "block" => contact(&emx, account, &rest, "blocked", a, json),
+        "forget" => forget(&emx, account, &rest, json),
         "webhooks" => webhooks(&emx, json),
         "webhook" => webhook(&emx, account, &rest, a, json),
         "watch" => watch(&emx, account, a, json),
@@ -302,6 +322,10 @@ enum Fail {
     Local(String),
     /// The command line is wrong: exit status 2.
     Usage(String),
+    /// There is no token to use: exit status 3, as for a refused one.
+    NoToken(String),
+    /// A send may or may not have gone out: exit status 5.
+    Uncertain(String),
 }
 
 impl From<Error> for Fail {
@@ -348,7 +372,7 @@ fn default_from(me: &emx_sdk::Me) -> Option<String> {
 
 fn describe(e: &Fail) -> String {
     match e {
-        Fail::Local(m) | Fail::Usage(m) => m.clone(),
+        Fail::Local(m) | Fail::Usage(m) | Fail::NoToken(m) | Fail::Uncertain(m) => m.clone(),
         Fail::Emx(Error::Api { status: 401, .. }) => {
             "the token was refused; run emx login with a current one".into()
         }
@@ -778,7 +802,7 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
         // came before anything was sent; after any other failure nobody
         // knows.
         Err(e @ (Error::Transport(_) | Error::Api { status: 500.., .. })) => {
-            return Err(Fail::Local(format!(
+            return Err(Fail::Uncertain(format!(
                 "{}\nThe message may have been sent. To send it again without a second copy, \
                  repeat the command with --idempotency-key {key}",
                 describe(&Fail::Emx(e))
@@ -810,16 +834,29 @@ fn contacts(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fai
     Ok(())
 }
 
-fn contact(emx: &Client, account: &str, rest: &[&str], state: &str, a: &Args) -> Result<(), Fail> {
+fn contact(
+    emx: &Client,
+    account: &str,
+    rest: &[&str],
+    state: &str,
+    a: &Args,
+    json: bool,
+) -> Result<(), Fail> {
     let address = rest.first().ok_or_else(|| usage("<address>"))?;
     emx.set_contact(account, address, state, a.value("name").unwrap_or(""))?;
+    if json {
+        return out(&serde_json::json!({"address": address, "state": state}));
+    }
     outln!("{address} {state}");
     Ok(())
 }
 
-fn forget(emx: &Client, account: &str, rest: &[&str]) -> Result<(), Fail> {
+fn forget(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), Fail> {
     let address = rest.first().ok_or_else(|| usage("forget <address>"))?;
     emx.remove_contact(account, address)?;
+    if json {
+        return out(&serde_json::json!({"address": address, "forgotten": true}));
+    }
     outln!("{address} forgotten");
     Ok(())
 }
@@ -872,15 +909,27 @@ fn webhook(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> 
             outln!("{}\nsecret (shown once): {}", made.webhook.id, made.secret);
         }
         "delete" => {
-            emx.delete_webhook(id.ok_or_else(|| usage("webhook delete <id>"))?)?;
+            let id = id.ok_or_else(|| usage("webhook delete <id>"))?;
+            emx.delete_webhook(id)?;
+            if json {
+                return out(&serde_json::json!({"id": id, "deleted": true}));
+            }
             outln!("deleted");
         }
         "test" => {
-            emx.test_webhook(id.ok_or_else(|| usage("webhook test <id>"))?)?;
+            let id = id.ok_or_else(|| usage("webhook test <id>"))?;
+            emx.test_webhook(id)?;
+            if json {
+                return out(&serde_json::json!({"id": id, "pinged": true}));
+            }
             outln!("a ping is on its way");
         }
         "enable" => {
-            emx.enable_webhook(id.ok_or_else(|| usage("webhook enable <id>"))?)?;
+            let id = id.ok_or_else(|| usage("webhook enable <id>"))?;
+            emx.enable_webhook(id)?;
+            if json {
+                return out(&serde_json::json!({"id": id, "enabled": true}));
+            }
             outln!("on again");
         }
         "deliveries" => {
@@ -1389,7 +1438,7 @@ mod tests {
 
     fn local_message(r: Result<(), Fail>) -> String {
         match r {
-            Err(Fail::Local(m) | Fail::Usage(m)) => m,
+            Err(Fail::Local(m) | Fail::Usage(m) | Fail::NoToken(m) | Fail::Uncertain(m)) => m,
             Err(Fail::Emx(e)) => panic!("expected a local failure, got {e}"),
             Ok(()) => panic!("expected a failure"),
         }

@@ -21,6 +21,13 @@ emx --json list | jq '.messages[].subject'
 readable by you alone; `EMX_TOKEN` and `EMX_BASE_URL` in the environment
 win over it, which is what a server uses.
 
+`emx` ends with status 0 when it did what was asked, 1 when EMX refused
+or a file here could not be read, 2 for a command line it does not
+understand, 3 without a token or with one EMX refused, 4 when the
+network or EMX is away for a moment (the same command may work soon),
+and 5 when a send may or may not have gone out. With `--json`, every
+command answers JSON.
+
 `emx` trusts the Mozilla root certificates it is built with. Behind a
 proxy that inspects TLS with a company authority, or for a self-hosted
 server with a certificate from a private one, set `EMX_CA_FILE` to a

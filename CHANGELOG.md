@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `emx` ends with a status a script can act on: 3 without a token or
+  with one EMX refused, 4 when the network or EMX is away for a moment,
+  5 when a send may or may not have gone out, besides 2 for a wrong
+  command line and 1 for any other failure; every failure used to end
+  with 1. `approve`, `block`, `forget` and `webhook delete`, `test` and
+  `enable` answer JSON with `--json`; they printed prose.
 - The desktop composer checks attachments against the largest message
   EMX takes, as mail encodes them, before reading a file; a message
   over the limit was uploaded whole and only then refused. Saving an

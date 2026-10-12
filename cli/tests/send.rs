@@ -88,7 +88,7 @@ fn without_a_key_one_is_made() {
 fn a_lost_answer_names_the_key_to_send_again_with() {
     let (base, key) = server(false);
     let out = send(&base, &[]);
-    assert!(!out.status.success());
+    assert_eq!(out.status.code(), Some(5), "a send whose outcome is not known");
     let key = key.recv().unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains(&format!("--idempotency-key {key}")), "{err}");
