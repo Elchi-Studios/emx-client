@@ -97,7 +97,11 @@
         </div>
       {/if}
       {#if b.html}
-        <iframe title="Message" sandbox="" srcdoc={html} class:dim={building}></iframe>
+        <!-- No scripts and no same origin. Popups only: every link in a
+             message opens in a new window, which the app turns into the
+             system's browser or mail program for web and mail links, and
+             into nothing for any other. -->
+        <iframe title="Message" sandbox="allow-popups" srcdoc={html} class:dim={building}></iframe>
       {:else}
         <pre class="text">{b.text}</pre>
       {/if}

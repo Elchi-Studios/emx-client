@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Links in an HTML message open in the system's browser, and mail
+  addresses in the mail program, from the desktop app; a click on one
+  used to do nothing. Only `http`, `https` and `mailto` links leave the
+  app. The window gets no new permission: the app hands the link on
+  itself.
 - The desktop app's message list no longer stops updating after a
   message below the loaded part changed on another device: a change is
   added only where the loaded part reaches, and a further page never

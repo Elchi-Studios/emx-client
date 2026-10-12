@@ -13,7 +13,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::webview::NewWindowResponse;
+use tauri::{AppHandle, Emitter, Manager, State, Url, WebviewWindowBuilder};
 
 /// What the app keeps between calls.
 #[derive(Default)]
@@ -526,6 +527,29 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>)
     });
 }
 
+// --- Links in a message ------------------------------------------------------
+
+/// Whether a link from a message may leave the app for the system's
+/// browser or mail program: web pages and mail addresses only, never a
+/// file, a script or another program's scheme.
+fn opens_outside(url: &Url) -> bool {
+    match url.scheme() {
+        "http" | "https" => url.host().is_some(),
+        "mailto" => true,
+        _ => false,
+    }
+}
+
+/// A link clicked in a message: the message's frame asks for a new
+/// window, since every link there opens in one. No window is made in the
+/// app; the link goes to the system, if it is one that may.
+fn open_link<R: tauri::Runtime>(url: Url) -> NewWindowResponse<R> {
+    if opens_outside(&url) {
+        let _ = open::that_detached(url.as_str());
+    }
+    NewWindowResponse::Deny
+}
+
 fn base64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -553,6 +577,22 @@ fn base64(data: &[u8]) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(Mutex::new(App::default()))
+        // The window is made here rather than from the configuration
+        // alone, so that it can hand links in a message to the system.
+        .setup(|app| {
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .cloned()
+                .ok_or("the main window is not configured")?;
+            WebviewWindowBuilder::from_config(app.handle(), &config)?
+                .on_new_window(|url, _| open_link(url))
+                .build()?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             sign_in,
             resume,
@@ -597,6 +637,20 @@ mod tests {
             }
         }
         assert!(commands >= 19, "found {commands} commands");
+    }
+
+    #[test]
+    fn only_web_and_mail_links_leave_the_app() {
+        let ok = |s: &str| opens_outside(&Url::parse(s).unwrap());
+        assert!(ok("https://example.ch/rechnung?id=1"));
+        assert!(ok("http://example.ch"));
+        assert!(ok("mailto:anna@example.ch?subject=Offerte"));
+        assert!(!ok("file:///etc/passwd"));
+        assert!(!ok("javascript:alert(1)"));
+        assert!(!ok("data:text/html,hi"));
+        assert!(!ok("tel:+41441234567"));
+        assert!(!ok("smb://server/share"));
+        assert!(!ok("ms-settings:privacy"));
     }
 
     #[test]
