@@ -28,6 +28,11 @@ is built from source as above.
   with no scripts. Remote images stay out until asked for; inline images
   are fetched through the Rust side.
 
+Links in a message open in the system's browser, and mail addresses
+in the mail program; other kinds of link do nothing. HTML mail is shown
+on a white page in both themes. Search covers every folder, and Delete
+removes a message for good only when it is in Trash or Junk.
+
 Keys: `j` `k` move, `e` archive, `#` or `Delete` trash, `u` read or
 unread, `s` flag, `r` reply, `a` reply all, `c` new message, `/` search,
 `Esc` close. They do nothing while the composer is open. In Trash,
@@ -40,4 +45,9 @@ Sealed mailboxes open in the web client only, because the key lives
 there. Drafts are not saved between sessions. Notifications from the
 system tray and a keychain for the token are next.
 
-GNU Affero General Public License 3.0.
+GNU Affero General Public License 3.0. The crates and packages the app
+is built from are under their own licences, and their notices go with
+every copy of it. For the Rust side,
+`scripts/third-party-notices.py emx-desktop > THIRD-PARTY-NOTICES.txt`
+writes them, to be put in the installer; the Svelte runtime in the
+window is MIT, and its notice is in `node_modules/svelte/LICENSE.md`.

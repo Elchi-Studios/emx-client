@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The command line comes with the notices of the crates it is built
+  from, in `cli/THIRD-PARTY-NOTICES.txt`, and
+  `scripts/third-party-notices.py` writes them for the command line or
+  the desktop app.
 - Every source file names its licence with an SPDX line: MPL-2.0, with
   the notice of the licence's Exhibit A, for the SDK and the command
   line; AGPL-3.0-only for the desktop app.

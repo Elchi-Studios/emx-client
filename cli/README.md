@@ -32,4 +32,8 @@ on.
 `emx api` reaches any call under `/api/`, for the administration calls
 and whatever the service adds next.
 
-Mozilla Public License 2.0.
+Mozilla Public License 2.0. The crates `emx` is built from are under
+their own licences, MIT, Apache 2.0, ISC and others; their notices are
+in THIRD-PARTY-NOTICES.txt, which goes with every copy of the program.
+`scripts/third-party-notices.py emx-cli` writes it again after a
+dependency changes.
