@@ -90,11 +90,17 @@ impl From<Error> for Failure {
                 "offline".into(),
                 "EMX cannot be reached. Check the internet connection and try again.".into(),
             ),
-            // The per-minute limit: the only 429 that passes, whatever
-            // code the service gave it.
+            // The per-minute limit: the only 429 that passes.
             Error::Api { status: 429, .. } if retryable => (
                 "rate_limited".into(),
                 "EMX received too many requests from this app in the last minute. Try again in a moment."
+                    .into(),
+            ),
+            Error::Api {
+                status: 429, code, ..
+            } if code == "hourly_limit" => (
+                code.clone(),
+                "This hour's limit of recipients outside your organisation is reached. The message was not sent; send it again later."
                     .into(),
             ),
             Error::Api { status, code, .. } if retryable && *status >= 500 => (
@@ -808,6 +814,17 @@ mod tests {
         assert!(busy.retryable);
         assert!(busy.message.contains("too many requests"), "{}", busy.message);
         assert!(!busy.message.contains("HTTP 429"), "{}", busy.message);
+
+        let hourly = Failure::from(Error::Api {
+            status: 429,
+            code: "hourly_limit".into(),
+            message: "more than 300 external recipients this hour".into(),
+            request_id: None,
+            retry_after: None,
+        });
+        assert_eq!(hourly.code, "hourly_limit");
+        assert!(!hourly.retryable);
+        assert!(hourly.message.contains("not sent"), "{}", hourly.message);
 
         let daily = Failure::from(Error::Api {
             status: 429,

@@ -348,6 +348,24 @@ fn lasting_refusals_are_not_retried() {
     assert_eq!(seen.lock().unwrap().len(), 2, "one request each");
 }
 
+/// More recipients outside the organisation than the hour allows: the
+/// same send is refused until the hour is over, so it is not repeated,
+/// even with a short `Retry-After`.
+#[test]
+fn the_hourly_limit_is_not_retried() {
+    let (base, seen) = server(vec![(
+        429,
+        r#"{"error":{"code":"hourly_limit","message":"more than 300 external recipients this hour"}}"#,
+    )]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let started = std::time::Instant::now();
+    let err = emx.send_mail(&draft()).unwrap_err();
+    assert_eq!(err.code(), Some("hourly_limit"));
+    assert!(!err.is_retryable());
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
 #[test]
 fn a_long_pause_is_left_to_the_caller() {
     let (base, seen) = server_with(vec![(

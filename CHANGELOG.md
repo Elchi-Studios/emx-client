@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A send refused with `429 hourly_limit` (more recipients outside the
+  organisation than the hour allows) is no longer tried three times:
+  of the 429 refusals only the per-minute rate limit is tried again.
+  The desktop app says which limit was reached, instead of "too many
+  requests in the last minute".
 - Search goes past the first 50 hits. The SDK has
   `Client::search_page(account, query, mailbox, limit, cursor)`, which
   can keep to one folder; `emx search` takes `--mailbox`, `--limit` and

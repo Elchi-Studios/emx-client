@@ -42,16 +42,17 @@ impl Error {
     }
 
     /// True when the call may be repeated as it was after a pause: the
-    /// connection failed, the per-minute rate limit was reached, or the
-    /// service had a passing problem. Not for the daily and monthly
-    /// sending limits, which last until the day or month is over, and
-    /// not for `unavailable`, which means the service at the base URL
-    /// does not offer the call at all.
+    /// connection failed, the per-minute rate limit (`rate_limited`) was
+    /// reached, or the service had a passing problem. Not for any other
+    /// 429: the hourly, daily and monthly sending limits last for hours,
+    /// and the same send is refused again until then. Not for
+    /// `unavailable` either, which means the service at the base URL does
+    /// not offer the call at all.
     pub fn is_retryable(&self) -> bool {
         match self {
             Error::Api {
                 status: 429, code, ..
-            } => code != "daily_limit" && code != "monthly_limit",
+            } => code == "rate_limited",
             Error::Api { status, code, .. } => *status >= 500 && *status != 501 && code != "unavailable",
             Error::Transport(_) => true,
             _ => false,
