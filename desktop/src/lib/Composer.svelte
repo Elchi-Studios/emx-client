@@ -2,7 +2,7 @@
 <script lang="ts">
   import { app } from '$lib/state.svelte';
   import { emx, newKey } from '$lib/emx';
-  import { fits } from '$lib/mail';
+  import { fits, normalizeRecipients } from '$lib/mail';
   import { size } from '$lib/state.svelte';
 
   const start = app.composing ?? {};
@@ -46,10 +46,12 @@
     e.preventDefault();
     busy = true;
     try {
+      // Written the way the service reads them: `;` between addresses,
+      // as Outlook writes them, and names with `[`, `:` or `;` failed.
       const draft = {
         from,
-        to,
-        cc: showCc ? cc : '',
+        to: normalizeRecipients(to),
+        cc: showCc ? normalizeRecipients(cc) : '',
         subject,
         text,
         inReplyTo: start.inReplyTo,

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The desktop composer sends to addresses separated by `;`, as Outlook
+  writes them, or by spaces, and to names with `[`, `:` or `;` in them,
+  which it now quotes; such a send failed with "an address is
+  malformed". A name that is only the address again is left out. A
+  reply to a forward (`WG:`, `Fwd:`) is `Re: WG: ...`; `AW:` and
+  `Antw:` count as replies already.
 - The README and CONTRIBUTING say that a plain `cargo build` or
   `cargo test` covers the SDK and the command line only, and what the
   desktop app needs besides (Rust 1.88, GTK and WebKit on Linux).

@@ -153,3 +153,66 @@ export function fits(sizes: number[], text: string, max: number | undefined): bo
   const bytes = sizes.reduce((a, b) => a + b, 0);
   return encodedSize(bytes, sizes.length) + new TextEncoder().encode(text).length * 2 + 4096 <= max;
 }
+
+/// A reply's subject: `Re: ` in front, unless it is a reply already,
+/// in English or German (`Re:`, `AW:`, `Antw:`). A forward (`Fwd:`,
+/// `WG:`) is answered with `Re: WG: ...`.
+export function replySubject(subject: string): string {
+  return /^\s*(re|aw|antw)\s*:/i.test(subject) ? subject : 'Re: ' + subject;
+}
+
+/// One recipient as the service reads it: a display name with any of
+/// the characters that mean something in an address quoted, and none
+/// when it is only the address again.
+export function formatRecipient(name: string, address: string): string {
+  const n = name.trim();
+  if (!n || n.toLowerCase() === address.toLowerCase()) return address;
+  return /^[\p{L}\p{N} !#$%&'*+\-/=?^_`{|}~.]+$/u.test(n) && !/^\.|\.$|\.\./.test(n)
+    ? `${n} <${address}>`
+    : `"${n.replace(/(["\\])/g, '\\$1')}" <${address}>`;
+}
+
+/// A To or Cc field as typed, made into the comma separated list the
+/// service reads: `;` between addresses, as Outlook writes them, and
+/// bare addresses with only spaces between them are separated by
+/// commas; display names that need it are quoted. Anything it does not
+/// recognise is left for the service to judge.
+export function normalizeRecipients(field: string): string {
+  const pieces: string[] = [];
+  let cur = '';
+  let quoted = false;
+  let angle = false;
+  for (let i = 0; i < field.length; i++) {
+    const c = field[i];
+    if (c === '\\' && quoted && i + 1 < field.length) {
+      cur += c + field[++i];
+      continue;
+    }
+    if (c === '"') quoted = !quoted;
+    else if (!quoted && c === '<') angle = true;
+    else if (!quoted && c === '>') angle = false;
+    if (!quoted && !angle && (c === ',' || c === ';')) {
+      pieces.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += c;
+  }
+  pieces.push(cur);
+  const out: string[] = [];
+  for (const raw of pieces) {
+    const p = raw.trim();
+    if (!p) continue;
+    const named = p.match(/^(.*?)\s*<\s*([^<>\s]+@[^<>\s]+)\s*>$/);
+    if (named) {
+      let name = named[1].trim();
+      if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) name = name.slice(1, -1).replace(/\\(.)/g, '$1');
+      out.push(formatRecipient(name, named[2]));
+      continue;
+    }
+    const words = p.split(/\s+/);
+    if (words.length > 1 && words.every((w) => /^[^\s@<>"]+@[^\s@<>"]+$/.test(w))) out.push(...words);
+    else out.push(p);
+  }
+  return out.join(', ');
+}

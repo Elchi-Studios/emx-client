@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bareAddress, encodedSize, fits, frame, htmlToText, quotable, replyRecipients } from '../src/lib/mail.ts';
+import { bareAddress, encodedSize, fits, formatRecipient, frame, htmlToText, normalizeRecipients, quotable, replyRecipients, replySubject } from '../src/lib/mail.ts';
 
 test('own addresses are matched whole, in any case', () => {
   const m = { from: 'anna@example.ch', to: ['s@x.ch', 'lukas@x.ch'], cc: ['S@X.CH', 'info@x.ch'], replyTo: [] };
@@ -63,4 +63,32 @@ test('attachments are measured as mail measures them', () => {
   assert.equal(fits([40 * 1024 * 1024], '', 0), true);
   assert.equal(fits([], 'Hallo', undefined), true);
   assert.ok(encodedSize(3, 1) >= 4);
+});
+
+test('a reply subject gets one prefix, in English or German', () => {
+  assert.equal(replySubject('Offerte'), 'Re: Offerte');
+  assert.equal(replySubject('RE: Offerte'), 'RE: Offerte');
+  assert.equal(replySubject('AW: Offerte'), 'AW: Offerte');
+  assert.equal(replySubject('Antw: Offerte'), 'Antw: Offerte');
+  assert.equal(replySubject('WG: Offerte'), 'Re: WG: Offerte');
+  assert.equal(replySubject('Fwd: Offerte'), 'Re: Fwd: Offerte');
+  assert.equal(replySubject('Rechnung: Mai'), 'Re: Rechnung: Mai');
+});
+
+test('recipients are written the way the service reads them', () => {
+  assert.equal(normalizeRecipients('a@b.ch; c@d.ch'), 'a@b.ch, c@d.ch');
+  assert.equal(normalizeRecipients('a@b.ch c@d.ch'), 'a@b.ch, c@d.ch');
+  assert.equal(normalizeRecipients(' a@b.ch ,, c@d.ch ;'), 'a@b.ch, c@d.ch');
+  assert.equal(normalizeRecipients('noreply@shop.ch <noreply@shop.ch>'), 'noreply@shop.ch');
+  assert.equal(normalizeRecipients('Support [Ticket] <s@b.ch>'), '"Support [Ticket]" <s@b.ch>');
+  assert.equal(normalizeRecipients('"Anna; Team" <a@b.ch>; c@d.ch'), '"Anna; Team" <a@b.ch>, c@d.ch');
+  assert.equal(normalizeRecipients('Team: Sales <s@b.ch>'), '"Team: Sales" <s@b.ch>');
+  assert.equal(normalizeRecipients('Hans Müller <h@b.ch>'), 'Hans Müller <h@b.ch>');
+  assert.equal(normalizeRecipients('Dr. Hans Müller <h@b.ch>'), 'Dr. Hans Müller <h@b.ch>');
+  assert.equal(normalizeRecipients('Müller & Co <h@b.ch>'), 'Müller & Co <h@b.ch>');
+  assert.equal(normalizeRecipients('"Say \\"hi\\"" <h@b.ch>'), '"Say \\"hi\\"" <h@b.ch>');
+  assert.equal(normalizeRecipients(''), '');
+  // Something it does not recognise goes as typed, for the service to judge.
+  assert.equal(normalizeRecipients('not an address'), 'not an address');
+  assert.equal(formatRecipient('', 'a@b.ch'), 'a@b.ch');
 });

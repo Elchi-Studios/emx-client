@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script lang="ts">
   import { app } from '$lib/state.svelte';
-  import { quotable, replyRecipients } from '$lib/mail';
+  import { quotable, replyRecipients, replySubject } from '$lib/mail';
   import Sidebar from './Sidebar.svelte';
   import MessageList from './MessageList.svelte';
   import MessageView from './MessageView.svelte';
@@ -82,7 +82,7 @@
       .join('\n');
     app.composing = {
       to: recipients.join(', '),
-      subject: m.message.subject.match(/^re:/i) ? m.message.subject : 'Re: ' + m.message.subject,
+      subject: replySubject(m.message.subject),
       text: `\n\nOn ${new Date(m.message.receivedAt).toLocaleString()}, ${m.message.from.name || m.message.from.address} wrote:\n${quoted}`,
       inReplyTo: m.body.messageId,
       references: [...m.body.references, m.body.messageId].filter(Boolean)
