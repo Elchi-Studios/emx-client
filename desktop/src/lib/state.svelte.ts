@@ -54,9 +54,15 @@ class State {
     return a?.address ?? '';
   }
 
+  // The timers that clear a toast: each new toast restarts its own, so
+  // one from an earlier action never clears a newer one early.
+  private noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  private problemTimer: ReturnType<typeof setTimeout> | undefined;
+
   say(text: string): void {
     this.notice = text;
-    setTimeout(() => (this.notice = ''), 4000);
+    clearTimeout(this.noticeTimer);
+    this.noticeTimer = setTimeout(() => (this.notice = ''), 4000);
   }
 
   /// Asks before something that cannot be undone. Resolves true when the
@@ -80,7 +86,8 @@ class State {
       return;
     }
     this.problem = describe(e);
-    setTimeout(() => (this.problem = ''), 6000);
+    clearTimeout(this.problemTimer);
+    this.problemTimer = setTimeout(() => (this.problem = ''), 6000);
   }
 
   async start(me: Me): Promise<void> {

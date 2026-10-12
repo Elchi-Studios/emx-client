@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A message at the bottom of the desktop app's window stays for its
+  full time; the timer of an earlier one cleared it early, so "Saved
+  to ..." could vanish at once after a quick Archive.
 - `EMX_CA_FILE` names a PEM file of certificate authorities that `emx`
   and the desktop app trust instead of the bundled Mozilla roots, for a
   network whose proxy inspects TLS and for a self-hosted server with a
