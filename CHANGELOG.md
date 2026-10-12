@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `emx` drops control characters from mail it shows on a terminal, so
+  a message can no longer set the window's title, clear the screen or
+  write the clipboard with escape sequences. `read --raw` on a terminal
+  is cleaned the same way, and `part` without `--out` shows only a text
+  part on a terminal; to a file or a pipe, both write the bytes as
+  received.
+- `emx read` of an HTML-only message decodes every character reference
+  once: `&#34;` reads as `"`, and `&amp;lt;` as `&lt;`, no longer `<`.
+  A large style block no longer takes a minute.
 - `emx watch` waits and tries again when the per-minute rate limit is
   reached, as long as the service asks with `Retry-After`, instead of
   ending; it ended when another program with the same token used up the

@@ -519,7 +519,13 @@ fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Res
     let id = rest.first().ok_or_else(|| usage("read <id>"))?;
     if a.switch("raw") {
         let raw = emx.raw(account, id)?;
-        emit_bytes(&raw);
+        // As received for a file or a pipe; on a terminal, without what
+        // the terminal would take for a command.
+        if std::io::stdout().is_terminal() {
+            outp!("{}", clean(&String::from_utf8_lossy(&raw)));
+        } else {
+            emit_bytes(&raw);
+        }
         return Ok(());
     }
     let full = emx.message(account, id)?;
@@ -527,13 +533,13 @@ fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Res
         return out(&full);
     }
     let m = &full.message;
-    outln!("From:    {}", m.from);
-    outln!("To:      {}", m.to.join(", "));
+    outln!("From:    {}", clean(&m.from.to_string()));
+    outln!("To:      {}", clean(&m.to.join(", ")));
     if !m.cc.is_empty() {
-        outln!("Cc:      {}", m.cc.join(", "));
+        outln!("Cc:      {}", clean(&m.cc.join(", ")));
     }
     outln!("Date:    {}", when(&m.received_at));
-    outln!("Subject: {}", m.subject);
+    outln!("Subject: {}", clean(&m.subject));
     if full.body.sealed {
         outln!("\n[sealed: the body is encrypted to the mailbox's key and opens in the web client]");
         return Ok(());
@@ -541,19 +547,19 @@ fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Res
     for at in &full.body.attachments {
         outln!(
             "Part:    {}  {}  {} ({} bytes)",
-            at.part,
-            at.filename,
-            at.content_type,
+            clean(&at.part),
+            clean(&at.filename),
+            clean(&at.content_type),
             at.size
         );
     }
     outln!();
     if a.switch("html") && !full.body.html.is_empty() {
-        outln!("{}", full.body.html);
+        outln!("{}", clean(&full.body.html));
     } else if !full.body.text.is_empty() {
-        outln!("{}", full.body.text.replace("\r\n", "\n"));
+        outln!("{}", clean(&full.body.text.replace("\r\n", "\n")));
     } else if !full.body.html.is_empty() {
-        outln!("{}", strip_tags(&full.body.html));
+        outln!("{}", clean(&strip_tags(&full.body.html)));
     }
     Ok(())
 }
@@ -570,6 +576,16 @@ fn part(emx: &Client, account: &str, rest: &[&str], a: &Args) -> Result<(), Fail
         Some(path) => {
             std::fs::write(path, &data).map_err(|e| file_err(path, e))?;
             eprintln!("{} bytes of {kind} written to {path}", data.len());
+        }
+        // A terminal shows text only; a PDF or an image would fill it
+        // with noise, and with sequences the terminal takes as commands.
+        None if std::io::stdout().is_terminal() => {
+            if !kind.starts_with("text/") {
+                return Err(Fail::Usage(format!(
+                    "the part is {kind}; save it with --out FILE, or send the output to a file or program"
+                )));
+            }
+            outp!("{}", clean(&String::from_utf8_lossy(&data)));
         }
         None => emit_bytes(&data),
     }
@@ -990,7 +1006,13 @@ fn catch_up(
                 outln!("{}", serde_json::to_string(&changes).map_err(local)?);
             } else {
                 for m in &changes.updated {
-                    outln!("{} {}  {}  {}", m.modseq, m.id, m.from, trim(&m.subject, 60));
+                    outln!(
+                        "{} {}  {}  {}",
+                        m.modseq,
+                        m.id,
+                        trim(&m.from.to_string(), 60),
+                        trim(&m.subject, 60)
+                    );
                 }
                 for id in &changes.destroyed {
                     outln!("{} {}  gone", changes.modseq, id);
@@ -1124,7 +1146,7 @@ fn when(ts: &str) -> String {
 }
 
 fn trim(s: &str, n: usize) -> String {
-    let s = s.replace(['\n', '\r'], " ");
+    let s = clean(&s.replace(['\n', '\r'], " "));
     if s.chars().count() <= n {
         s
     } else {
@@ -1133,46 +1155,38 @@ fn trim(s: &str, n: usize) -> String {
     }
 }
 
-/// A plain reading of HTML for a terminal: tags removed, block ends as
-/// line breaks, style and script dropped, the common entities decoded.
+/// A plain reading of HTML for a terminal: tags and comments removed,
+/// block ends as line breaks, style and script dropped, entities decoded
+/// once. One pass over the text, however large a style block is.
 fn strip_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
-    let mut chars = html.chars().peekable();
-    let mut tag = String::new();
-    while let Some(c) = chars.next() {
-        if c != '<' {
-            out.push(c);
+    let mut rest = html;
+    while let Some(i) = rest.find('<') {
+        decode_entities(&rest[..i], &mut out);
+        rest = &rest[i + 1..];
+        if let Some(comment) = rest.strip_prefix("!--") {
+            rest = comment.find("-->").map(|e| &comment[e + 3..]).unwrap_or("");
             continue;
         }
-        tag.clear();
-        for t in chars.by_ref() {
-            if t == '>' {
-                break;
-            }
-            tag.push(t);
-        }
+        let end = rest.find('>').unwrap_or(rest.len());
+        let tag = &rest[..end];
+        rest = rest.get(end + 1..).unwrap_or("");
         let closing = tag.starts_with('/');
         let name = tag
             .trim_matches('/')
             .split(|c: char| c.is_whitespace() || c == '/')
             .next()
             .unwrap_or("")
-            .to_lowercase();
+            .to_ascii_lowercase();
         if !closing && (name == "style" || name == "script") {
-            // Skip to the closing tag.
-            let end = format!("</{name}");
-            let mut window = String::new();
-            for t in chars.by_ref() {
-                window.push(t);
-                if window.to_lowercase().ends_with(&end) {
-                    for t in chars.by_ref() {
-                        if t == '>' {
-                            break;
-                        }
-                    }
-                    break;
+            // Skip to the end of the closing tag.
+            rest = match find_ignore_case(rest, &format!("</{name}")) {
+                Some(at) => {
+                    let after = &rest[at..];
+                    after.find('>').map(|e| &after[e + 1..]).unwrap_or("")
                 }
-            }
+                None => "",
+            };
             continue;
         }
         if matches!(
@@ -1184,16 +1198,75 @@ fn strip_tags(html: &str) -> String {
             out.push('\n');
         }
     }
-    let out = out
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'");
+    decode_entities(rest, &mut out);
     let mut lines: Vec<&str> = out.lines().map(|l| l.trim()).collect();
     lines.dedup_by(|a, b| a.is_empty() && b.is_empty());
     lines.join("\n").trim().to_string()
+}
+
+/// Where `needle`, which is ASCII, first occurs in `hay`, in any case.
+fn find_ignore_case(hay: &str, needle: &str) -> Option<usize> {
+    let n = needle.as_bytes();
+    hay.as_bytes()
+        .windows(n.len())
+        .position(|w| w.eq_ignore_ascii_case(n))
+}
+
+/// Appends `text` with its character references decoded, each once: the
+/// named ones mail uses, and numeric ones such as `&#34;`, which is how
+/// the service writes a double quote. `&amp;lt;` stays `&lt;`.
+fn decode_entities(text: &str, out: &mut String) {
+    let mut rest = text;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let end = rest
+            .char_indices()
+            .take(12)
+            .find(|&(_, c)| c == ';')
+            .map(|(e, _)| e);
+        let decoded = end.and_then(|e| {
+            let name = &rest[1..e];
+            let c = match name {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "nbsp" => Some(' '),
+                _ => {
+                    let n = if let Some(hex) = name.strip_prefix("#x").or(name.strip_prefix("#X")) {
+                        u32::from_str_radix(hex, 16).ok()
+                    } else {
+                        name.strip_prefix('#').and_then(|d| d.parse().ok())
+                    };
+                    n.and_then(char::from_u32)
+                }
+            }?;
+            Some((c, e + 1))
+        });
+        match decoded {
+            Some((c, len)) => {
+                out.push(if c == '\u{a0}' { ' ' } else { c });
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+}
+
+/// Text from a message, safe to show on a terminal: control characters
+/// other than line breaks and tabs are dropped. A mail could otherwise
+/// set the window's title, clear the screen, write the clipboard or
+/// disguise a link with escape sequences.
+fn clean(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c == '\n' || c == '\t' || !c.is_control())
+        .collect()
 }
 
 /// The media type of an attachment, from its file name's extension. The
@@ -1357,6 +1430,42 @@ mod tests {
             strip_tags(html),
             "Danke für die Offerte, wir sind dabei.\nGruss\nAnna"
         );
+    }
+
+    #[test]
+    fn entities_are_decoded_once() {
+        assert_eq!(strip_tags("<p>Er sagte &#34;ja&#34;&#13;</p>"), "Er sagte \"ja\"");
+        assert_eq!(
+            strip_tags("<p>&amp;lt;b&amp;gt; is a tag</p>"),
+            "&lt;b&gt; is a tag"
+        );
+        assert_eq!(
+            strip_tags("A&nbsp;&#x41;&apos;s &unknown; & co &#xZZ;"),
+            "A A's &unknown; & co &#xZZ;"
+        );
+        assert_eq!(strip_tags("<!-- a > b --><p>x</p>"), "x");
+        assert_eq!(strip_tags("<STYLE>p{}</Style ><p>y</p><script>"), "y");
+    }
+
+    #[test]
+    fn a_large_style_block_is_quick() {
+        let html = format!("<style>{}</style><p>Hallo</p>", "p{color:red}".repeat(100_000));
+        let started = std::time::Instant::now();
+        assert_eq!(strip_tags(&html), "Hallo");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn terminal_sequences_are_dropped() {
+        assert_eq!(
+            clean("\u{1b}]0;PWNED\u{7}Hi \u{1b}[31mred\u{1b}[0m\u{9b}2J\r\n\tok"),
+            "]0;PWNEDHi [31mred[0m2J\n\tok"
+        );
+        assert_eq!(trim("a\u{1b}[2Jb", 10), "a[2Jb");
     }
 
     #[test]
