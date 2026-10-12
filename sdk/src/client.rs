@@ -670,6 +670,35 @@ impl Client {
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse::<u64>().ok());
+        // A redirect is not followed, so that the token never goes to
+        // another address; the error names where it pointed, which is
+        // usually the base URL to use instead.
+        if (300..400).contains(&status) {
+            let to = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| excerpt(v.trim()))
+                .unwrap_or_default();
+            let message = if to.is_empty() {
+                format!(
+                    "{} answers with a redirect; is it the address of the EMX service?",
+                    self.base
+                )
+            } else {
+                format!(
+                    "{} sends requests on to {to}; use that address (scheme and host) as the base URL",
+                    self.base
+                )
+            };
+            return Error::Api {
+                status,
+                code: "redirect".into(),
+                message,
+                request_id: None,
+                retry_after: None,
+            };
+        }
         let text = resp
             .into_body()
             .with_config()

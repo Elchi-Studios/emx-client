@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A base URL that redirects, such as the public site
+  `https://emxmail.ch`, is refused with the address it points to and a
+  hint to use that one, under the code `redirect`; the error read only
+  "HTTP 301". The redirect is still not followed, so the token never
+  goes to another address.
 - `emx` ends with a status a script can act on: 3 without a token or
   with one EMX refused, 4 when the network or EMX is away for a moment,
   5 when a send may or may not have gone out, besides 2 for a wrong

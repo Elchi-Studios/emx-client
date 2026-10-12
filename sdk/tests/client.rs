@@ -648,3 +648,21 @@ fn any_call() {
         ("PATCH", r#"{"screener":true}"#)
     );
 }
+
+#[test]
+fn a_redirect_names_where_it_points_and_is_not_followed() {
+    let (base, seen) = server_with(vec![
+        (301, "", "Location: https://mail.emxmail.app/api/me\r\n"),
+        (302, "", ""),
+    ]);
+    let c = Client::with_base_url(&base, "emx_test").unwrap();
+    let e = c.me().unwrap_err();
+    assert_eq!(e.code(), Some("redirect"));
+    assert!(!e.is_retryable());
+    let text = e.to_string();
+    assert!(text.contains("https://mail.emxmail.app/api/me"), "{text}");
+    assert!(text.contains("base URL"), "{text}");
+    let e = c.me().unwrap_err();
+    assert!(e.to_string().contains("redirect"), "{e}");
+    assert_eq!(seen.lock().unwrap().len(), 2, "nothing was followed");
+}
