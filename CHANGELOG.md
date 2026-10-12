@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The desktop app's message list no longer stops updating after a
+  message below the loaded part changed on another device: a change is
+  added only where the loaded part reaches, and a further page never
+  brings a message twice. A change notice that comes while the app is
+  fetching changes is no longer dropped; the app fetches once more. The
+  unread count moves only when EMX says the message changed. An answer
+  that comes back late (a folder clicked before another, an earlier
+  search, a page of the previous folder, a message passed with `j` or
+  `k`) no longer replaces a newer one, and the open message follows
+  what other devices do to it, its flag among them.
 - `emx` refuses an option a command does not take, and arguments it does
   not take, with exit status 2 and nothing sent. `emx delete <id>
   --dry-run` used to delete the message for good, `send --subjct S`

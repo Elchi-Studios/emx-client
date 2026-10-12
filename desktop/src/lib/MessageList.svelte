@@ -23,7 +23,7 @@
     {/if}
     {#each app.messages as m (m.id)}
       {@const unseen = !m.keywords.includes('$seen')}
-      <button class="row" class:unseen class:on={app.open?.message.id === m.id} onclick={() => app.read(m)}>
+      <button class="row" class:unseen class:on={(app.selected ?? app.open?.message.id) === m.id} onclick={() => app.read(m)}>
         <span class="dot" class:flag={m.keywords.includes('$flagged')}></span>
         <span class="body">
           <span class="line">

@@ -3,6 +3,7 @@
 // the web client does it.
 
 import { emx, describe, type Me, type Mailbox, type Message, type FullMessage } from './emx';
+import { appendPage, applyToFolder, applyToResults, Latest, unique, withKeyword } from './list';
 
 export const roleOrder = ['inbox', 'drafts', 'sent', 'archive', 'junk', 'trash'];
 
@@ -15,6 +16,9 @@ class State {
   cursor = $state('');
   loading = $state(false);
   open = $state<FullMessage | null>(null);
+  // The message last asked for, set at once, before it has loaded: j and
+  // k move on from here, so two quick presses open two messages.
+  selected = $state<string | null>(null);
   query = $state('');
   searching = $state(false);
   composing = $state<null | { to?: string; subject?: string; text?: string; inReplyTo?: string; references?: string[] }>(null);
@@ -25,6 +29,13 @@ class State {
   asking = $state<null | { text: string; confirm: string; answer: (ok: boolean) => void }>(null);
   modseq: Record<string, number> = {};
   private busy: Record<string, boolean> = {};
+  // A notice that came while that account's changes were being fetched:
+  // they are fetched once more when the fetch ends.
+  private again: Record<string, boolean> = {};
+  // What the list shows (a folder, a search) and which message is open:
+  // only the answer to the newest request is applied.
+  private view = new Latest();
+  private opening = new Latest();
 
   get accounts() {
     return this.me?.accounts ?? [];
@@ -69,13 +80,17 @@ class State {
   async switchAccount(id: string): Promise<void> {
     this.account = id;
     this.open = null;
+    this.selected = null;
+    this.opening.next();
     this.query = '';
     await this.loadMailboxes();
   }
 
   async loadMailboxes(): Promise<void> {
+    const account = this.account;
     try {
-      const list = await emx.mailboxes(this.account);
+      const list = await emx.mailboxes(account);
+      if (account !== this.account) return;
       list.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
       this.mailboxes = list;
       this.modseq[this.account] = Math.max(0, ...list.map((m) => m.modseq));
@@ -88,82 +103,107 @@ class State {
 
   async openMailbox(m: Mailbox | undefined): Promise<void> {
     if (!m) return;
+    const n = this.view.next();
     this.mailbox = m;
     this.query = '';
+    this.searching = false;
     this.messages = [];
     this.cursor = '';
     this.loading = true;
     try {
       const page = await emx.messages(this.account, m.id);
-      this.messages = page.messages;
+      if (!this.view.is(n)) return;
+      this.messages = unique(page.messages);
       this.cursor = page.cursor;
     } catch (e) {
-      this.fail(e);
+      if (this.view.is(n)) this.fail(e);
     } finally {
-      this.loading = false;
+      if (this.view.is(n)) this.loading = false;
     }
   }
 
+  /// The next page of what the list shows. It belongs to the view it was
+  /// asked for; when the folder changes meanwhile, it is dropped.
   async more(): Promise<void> {
-    if (!this.cursor || this.loading || !this.mailbox) return;
+    if (!this.cursor || this.loading || this.searching || !this.mailbox || this.query) return;
+    const n = this.view.current;
     this.loading = true;
     try {
       const page = await emx.messages(this.account, this.mailbox.id, this.cursor);
-      this.messages = [...this.messages, ...page.messages];
+      if (!this.view.is(n)) return;
+      this.messages = appendPage(this.messages, page.messages);
       this.cursor = page.cursor;
     } catch (e) {
-      this.fail(e);
+      if (this.view.is(n)) this.fail(e);
     } finally {
-      this.loading = false;
+      if (this.view.is(n)) this.loading = false;
     }
   }
 
   async search(q: string): Promise<void> {
-    this.query = q;
     if (!q.trim()) {
       await this.openMailbox(this.mailbox ?? undefined);
       return;
     }
+    const n = this.view.next();
+    this.query = q;
     this.searching = true;
+    this.loading = false;
     try {
-      this.messages = await emx.search(this.account, q);
+      const found = await emx.search(this.account, q);
+      if (!this.view.is(n)) return;
+      this.messages = unique(found);
       this.cursor = '';
     } catch (e) {
-      this.fail(e);
+      if (this.view.is(n)) this.fail(e);
     } finally {
-      this.searching = false;
+      if (this.view.is(n)) this.searching = false;
     }
   }
 
   async read(m: Message): Promise<void> {
+    const n = this.opening.next();
+    this.selected = m.id;
     try {
-      this.open = await emx.message(this.account, m.id);
-      if (!m.keywords.includes('$seen')) {
-        await emx.keywords(this.account, [m.id], ['$seen'], []);
-        this.patch(m.id, (x) => ({ ...x, keywords: [...x.keywords, '$seen'] }));
-        this.count(m.mailboxId, -1);
-      }
+      const full = await emx.message(this.account, m.id);
+      if (!this.opening.is(n)) return;
+      this.open = full;
+      if (!full.message.keywords.includes('$seen')) await this.setSeen(full.message, true);
     } catch (e) {
-      this.fail(e);
+      if (this.opening.is(n)) this.fail(e);
     }
+  }
+
+  /// Closes the open message, and makes one still loading come to
+  /// nothing.
+  close(): void {
+    this.opening.next();
+    this.open = null;
+    this.selected = null;
   }
 
   async toggleSeen(m: Message): Promise<void> {
-    const seen = m.keywords.includes('$seen');
     try {
-      await emx.keywords(this.account, [m.id], seen ? [] : ['$seen'], seen ? ['$seen'] : []);
-      this.patch(m.id, (x) => ({ ...x, keywords: seen ? x.keywords.filter((k) => k !== '$seen') : [...x.keywords, '$seen'] }));
-      this.count(m.mailboxId, seen ? 1 : -1);
+      await this.setSeen(m, !m.keywords.includes('$seen'));
     } catch (e) {
       this.fail(e);
     }
   }
 
+  /// Marks a message read or unread. The folder's unread count moves only
+  /// when the service says the message changed: one already read on the
+  /// phone is not counted twice.
+  private async setSeen(m: Message, seen: boolean): Promise<void> {
+    const changed = await emx.keywords(this.account, [m.id], seen ? ['$seen'] : [], seen ? [] : ['$seen']);
+    this.patch(m.id, (x) => ({ ...x, keywords: withKeyword(x.keywords, '$seen', seen) }));
+    if (changed.includes(m.id)) this.count(m.mailboxId, seen ? -1 : 1);
+  }
+
   async toggleFlag(m: Message): Promise<void> {
-    const on = m.keywords.includes('$flagged');
+    const on = !m.keywords.includes('$flagged');
     try {
-      await emx.keywords(this.account, [m.id], on ? [] : ['$flagged'], on ? ['$flagged'] : []);
-      this.patch(m.id, (x) => ({ ...x, keywords: on ? x.keywords.filter((k) => k !== '$flagged') : [...x.keywords, '$flagged'] }));
+      await emx.keywords(this.account, [m.id], on ? ['$flagged'] : [], on ? [] : ['$flagged']);
+      this.patch(m.id, (x) => ({ ...x, keywords: withKeyword(x.keywords, '$flagged', on) }));
     } catch (e) {
       this.fail(e);
     }
@@ -198,11 +238,28 @@ class State {
   }
 
   /// A change notice: ask what changed since the last modseq handled and
-  /// fold it into the lists. Notices during a fetch are coalesced.
+  /// fold it into the lists. A notice that comes during a fetch is not
+  /// lost: the fetch runs once more when it ends, for everything after
+  /// the modseq it reached.
   async onChange(account: string, _modseq: number): Promise<void> {
     if (account !== this.account) return;
-    if (this.busy[account]) return;
+    if (this.busy[account]) {
+      this.again[account] = true;
+      return;
+    }
     this.busy[account] = true;
+    try {
+      do {
+        this.again[account] = false;
+        await this.catchUp(account);
+      } while (this.again[account] && account === this.account);
+    } finally {
+      this.busy[account] = false;
+      this.again[account] = false;
+    }
+  }
+
+  private async catchUp(account: string): Promise<void> {
     try {
       let since = this.modseq[account] ?? 0;
       for (let i = 0; i < 20; i++) {
@@ -216,6 +273,7 @@ class State {
           }
           throw e;
         }
+        if (account !== this.account) return;
         since = ch.modseq;
         this.modseq[account] = since;
         this.apply(ch.updated, ch.destroyed);
@@ -223,29 +281,31 @@ class State {
       }
       // Counts come from the server; a change may have touched any folder.
       const list = await emx.mailboxes(account);
+      if (account !== this.account) return;
       list.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
       this.mailboxes = list;
       if (this.mailbox) this.mailbox = list.find((m) => m.id === this.mailbox!.id) ?? this.mailbox;
     } catch (e) {
       this.fail(e);
-    } finally {
-      this.busy[account] = false;
     }
   }
 
   private apply(updated: Message[], destroyed: string[]): void {
-    if (this.query) return;
-    let list = this.messages.filter((m) => !destroyed.includes(m.id));
-    for (const u of updated) {
-      const i = list.findIndex((m) => m.id === u.id);
-      const here = u.mailboxId === this.mailbox?.id;
-      if (i >= 0 && here) list[i] = u;
-      else if (i >= 0) list.splice(i, 1);
-      else if (here) list = [u, ...list];
+    // While a folder is still loading, its first page brings the current
+    // state; a list being replaced is left alone.
+    if (this.query) this.messages = applyToResults(this.messages, updated, destroyed);
+    else if (this.mailbox && !(this.loading && this.messages.length === 0))
+      this.messages = applyToFolder(this.messages, updated, destroyed, this.mailbox.id, this.cursor !== '');
+    if (!this.open) return;
+    const id = this.open.message.id;
+    if (destroyed.includes(id)) {
+      this.close();
+      return;
     }
-    list.sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : a.receivedAt > b.receivedAt ? -1 : 0));
-    this.messages = list;
-    if (this.open && destroyed.includes(this.open.message.id)) this.open = null;
+    // The open message follows what other devices do to it, its flag
+    // among them.
+    const u = updated.find((m) => m.id === id);
+    if (u) this.open = { ...this.open, message: u };
   }
 
   private patch(id: string, fn: (m: Message) => Message): void {
@@ -255,7 +315,7 @@ class State {
 
   private remove(id: string): void {
     this.messages = this.messages.filter((m) => m.id !== id);
-    if (this.open?.message.id === id) this.open = null;
+    if (this.open?.message.id === id) this.close();
   }
 
   private count(mailboxId: string, delta: number): void {

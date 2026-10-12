@@ -25,7 +25,9 @@
         break;
       case 'j':
       case 'k': {
-        const i = app.messages.findIndex((m) => m.id === cur?.id);
+        // From the message last asked for, which may still be loading.
+        const at = app.selected ?? cur?.id;
+        const i = app.messages.findIndex((m) => m.id === at);
         const next = app.messages[e.key === 'j' ? i + 1 : i - 1];
         if (next) app.read(next);
         break;
@@ -51,7 +53,7 @@
         if (cur) reply(true);
         break;
       case 'Escape':
-        app.open = null;
+        app.close();
         break;
     }
   }
@@ -78,7 +80,7 @@
   async function signOut(): Promise<void> {
     await emx.signOut();
     app.me = null;
-    app.open = null;
+    app.close();
     app.messages = [];
   }
 </script>
