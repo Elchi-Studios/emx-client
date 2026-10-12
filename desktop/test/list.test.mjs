@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendPage, applyToFolder, applyToResults, deletesForGood, Latest, unique, withKeyword } from '../src/lib/list.ts';
+import { appendPage, applyToFolder, applyToResults, deletesForGood, Latest, neighbour, unique, withKeyword } from '../src/lib/list.ts';
 
 const msg = (id, receivedAt, mailboxId = 'inbox', keywords = []) => ({ id, receivedAt, mailboxId, keywords });
 const ids = (list) => list.map((m) => m.id);
@@ -89,4 +89,13 @@ test('only the newest answer is applied', async () => {
   assert.ok(views.is(n));
   views.next();
   assert.ok(!views.is(n));
+});
+
+test('after a message leaves, the one below opens, or the one above at the end', () => {
+  const list = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  assert.equal(neighbour(list, 'a'), 'b');
+  assert.equal(neighbour(list, 'b'), 'c');
+  assert.equal(neighbour(list, 'c'), 'b');
+  assert.equal(neighbour([{ id: 'a' }], 'a'), null);
+  assert.equal(neighbour(list, 'x'), null);
 });

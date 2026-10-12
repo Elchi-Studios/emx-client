@@ -5,7 +5,7 @@
 // the web client does it.
 
 import { emx, describe, refused, type Me, type Mailbox, type Message, type FullMessage } from './emx';
-import { appendPage, applyToFolder, applyToResults, deletesForGood, Latest, unique, withKeyword } from './list';
+import { appendPage, applyToFolder, applyToResults, deletesForGood, Latest, neighbour, unique, withKeyword } from './list';
 
 export const roleOrder = ['inbox', 'drafts', 'sent', 'archive', 'junk', 'trash'];
 
@@ -285,7 +285,7 @@ class State {
     if (!target) return;
     try {
       await emx.move(this.account, [m.id], target.id);
-      this.remove(m.id);
+      this.remove(m.id, true);
       this.say(`Moved to ${target.name}`);
     } catch (e) {
       this.fail(e);
@@ -303,7 +303,7 @@ class State {
       if (!(await this.ask('Delete this message for good? It cannot be brought back.', 'Delete'))) return;
       try {
         await emx.delete(this.account, [m.id]);
-        this.remove(m.id);
+        this.remove(m.id, true);
         this.say('Deleted');
       } catch (e) {
         this.fail(e);
@@ -395,9 +395,18 @@ class State {
     if (this.open?.message.id === id) this.open = { ...this.open, message: fn(this.open.message) };
   }
 
-  private remove(id: string): void {
+  /// Takes a message out of the list. With `onward`, when it was the
+  /// one open (Archive, Trash, Delete), the next one in the list opens,
+  /// or the one above at the end, so that `j` and `k` go on from there
+  /// instead of from the top.
+  private remove(id: string, onward = false): void {
+    const wasOpen = this.open?.message.id === id;
+    const next = onward && wasOpen && this.selected === id ? neighbour(this.messages, id) : null;
     this.messages = this.messages.filter((m) => m.id !== id);
-    if (this.open?.message.id === id) this.close();
+    if (!wasOpen) return;
+    const m = next ? this.messages.find((x) => x.id === next) : undefined;
+    if (m) void this.read(m);
+    else this.close();
   }
 
   private count(mailboxId: string, delta: number): void {

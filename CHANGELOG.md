@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- After Archive, Trash or Delete on the open message, the desktop app
+  opens the next message in the list, or the one above at the end of
+  it, as the web client does. It closed the message, and `j` then went
+  on from the top of the list.
 - The desktop composer sends to addresses separated by `;`, as Outlook
   writes them, or by spaces, and to names with `[`, `:` or `;` in them,
   which it now quotes; such a send failed with "an address is

@@ -104,3 +104,11 @@ export class Latest {
     return n === this.n;
   }
 }
+
+/// The message to show after `id` leaves the list: the one below it, or
+/// the one above when it was the last, or none when it was alone.
+export function neighbour(list: { id: string }[], id: string): string | null {
+  const i = list.findIndex((m) => m.id === id);
+  if (i < 0) return null;
+  return list[i + 1]?.id ?? list[i - 1]?.id ?? null;
+}
