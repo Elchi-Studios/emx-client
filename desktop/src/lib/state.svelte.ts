@@ -33,6 +33,9 @@ class State {
   signedOut = $state('');
   modseq: Record<string, number> = {};
   private unlisten: (() => void)[] = [];
+  // Counts sign-ins and sign-outs: a start that a sign-out overtook
+  // while it waited adds no listener and follows nothing.
+  private signIns = 0;
   private busy: Record<string, boolean> = {};
   // A notice that came while that account's changes were being fetched:
   // they are fetched once more when the fetch ends.
@@ -86,10 +89,25 @@ class State {
     this.signedOut = '';
     const own = me.accounts.find((a) => a.rights.own);
     this.account = own?.id ?? 'me';
-    // Listening first: a change while the folders load is not missed.
-    this.unlisten.push(await emx.onChange((n) => this.onChange(n.account, n.modseq)));
-    this.unlisten.push(await emx.onRefused((f) => this.fail(f)));
+    // Listening first, then loading, then following: the first event of
+    // every stream carries the current modseq, so a change while the
+    // folders load is caught up from the modseq they brought.
+    const mine = ++this.signIns;
+    const offChange = await emx.onChange((n) => this.onChange(n.account, n.modseq));
+    const offRefused = await emx.onRefused((f) => this.fail(f));
+    if (mine !== this.signIns) {
+      offChange();
+      offRefused();
+      return;
+    }
+    this.unlisten.push(offChange, offRefused);
     await this.loadMailboxes();
+    if (mine !== this.signIns) return;
+    try {
+      await emx.follow();
+    } catch (e) {
+      this.fail(e);
+    }
   }
 
   /// Forgets the sign-in here and shows the sign-in form, with `reason`
@@ -116,6 +134,7 @@ class State {
   }
 
   private stopListening(): void {
+    this.signIns++;
     for (const off of this.unlisten.splice(0)) off();
   }
 
@@ -311,7 +330,13 @@ class State {
 
   private async catchUp(account: string): Promise<void> {
     try {
-      let since = this.modseq[account] ?? 0;
+      // Without a modseq the folders never loaded: load them, rather
+      // than ask for every change there ever was.
+      if (this.modseq[account] === undefined) {
+        await this.loadMailboxes();
+        return;
+      }
+      let since = this.modseq[account];
       for (let i = 0; i < 20; i++) {
         let ch;
         try {

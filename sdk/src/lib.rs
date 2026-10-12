@@ -41,7 +41,7 @@ pub mod webhook;
 
 pub use client::{idempotency_key, Client, Page};
 pub use error::Error;
-pub use events::{Event, Events};
+pub use events::{Event, Events, Next};
 pub use types::*;
 
 // The READMEs' examples, compiled with the doctests so that they keep

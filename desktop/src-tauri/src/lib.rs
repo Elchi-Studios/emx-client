@@ -24,6 +24,9 @@ struct App {
     client: Option<Client>,
     /// Ends the watcher of the previous sign-in.
     watching: Option<Arc<AtomicBool>>,
+    /// The accounts of the current sign-in, until the window asks to
+    /// follow them: it does once it listens, so that it misses no notice.
+    unfollowed: Vec<String>,
     /// Counts sign-ins begun and sign-outs. A sign-in takes a call to
     /// EMX, and the window can sign out meanwhile; the sign-in only
     /// takes effect if nothing came after it began.
@@ -37,18 +40,29 @@ impl App {
         self.generation
     }
 
-    /// Completes sign-in `n` with its client and answers the flag that
-    /// ends its watchers, or nothing when a sign-out or a newer sign-in
-    /// came since it began.
-    fn complete(&mut self, n: u64, client: Client) -> Option<Arc<AtomicBool>> {
+    /// Completes sign-in `n` with its client and the accounts to follow,
+    /// or answers false when a sign-out or a newer sign-in came since it
+    /// began.
+    fn complete(&mut self, n: u64, client: Client, accounts: Vec<String>) -> bool {
         if n != self.generation {
-            return None;
+            return false;
         }
         self.stop_watching();
         self.client = Some(client);
-        let stop = Arc::new(AtomicBool::new(false));
-        self.watching = Some(stop.clone());
-        Some(stop)
+        self.watching = Some(Arc::new(AtomicBool::new(false)));
+        self.unfollowed = accounts;
+        true
+    }
+
+    /// What the watchers of the current sign-in need, once: its client,
+    /// the flag that ends them and its accounts. Nothing when signed out
+    /// or when they run already.
+    fn follow(&mut self) -> Option<(Client, Arc<AtomicBool>, Vec<String>)> {
+        if self.unfollowed.is_empty() {
+            return None;
+        }
+        let accounts = std::mem::take(&mut self.unfollowed);
+        Some((self.client.clone()?, self.watching.clone()?, accounts))
     }
 
     /// Forgets the client, and makes any sign-in under way come to
@@ -60,6 +74,7 @@ impl App {
     }
 
     fn stop_watching(&mut self) {
+        self.unfollowed.clear();
         if let Some(stop) = self.watching.take() {
             stop.store(true, Ordering::Relaxed);
         }
@@ -215,9 +230,10 @@ fn load_token(app: &AppHandle) -> Option<(String, String)> {
 
 // --- Sign in -------------------------------------------------------------
 
-/// Signs in with a token: asks EMX who it belongs to, then starts the
-/// watchers. With `keep`, the token is written to disk as well, in the
-/// same step, so that a sign-out meanwhile cannot leave it behind.
+/// Signs in with a token: asks EMX who it belongs to. The window starts
+/// following the accounts with [`follow`] once it listens. With `keep`,
+/// the token is written to disk as well, in the same step, so that a
+/// sign-out meanwhile cannot leave it behind.
 async fn connect(
     app: &AppHandle,
     state: &Shared,
@@ -243,12 +259,25 @@ async fn connect(
     if keep {
         save_token(app, &base_url, &token)?;
     }
-    let stop = s.complete(n, c.clone()).ok_or_else(signed_out)?;
-    drop(s);
-    for account in &me.accounts {
-        watch(app.clone(), c.clone(), account.id.clone(), stop.clone());
+    let accounts = me.accounts.iter().map(|a| a.id.clone()).collect();
+    if !s.complete(n, c, accounts) {
+        return Err(signed_out());
     }
     Ok(me)
+}
+
+/// Starts following the accounts of the sign-in, once the window
+/// listens for what the watchers tell it: a notice sent before would be
+/// lost. A second call does nothing.
+#[tauri::command]
+async fn follow(app: AppHandle, state: State<'_, Shared>) -> Outcome<()> {
+    let Some((c, stop, accounts)) = state.lock().unwrap().follow() else {
+        return Ok(());
+    };
+    for account in accounts {
+        watch(app.clone(), c.clone(), account, stop.clone());
+    }
+    Ok(())
 }
 
 /// Signs in with a token and keeps it for next time.
@@ -515,6 +544,23 @@ struct ChangeNotice {
     modseq: i64,
 }
 
+/// How often a watcher looks whether it should stop, while it waits for
+/// the next event or before it connects again.
+const LOOK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Waits `secs` seconds, or less when `stop` is set meanwhile. Answers
+/// whether to go on.
+fn pause(stop: &AtomicBool, secs: u64) -> bool {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    while std::time::Instant::now() < until {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        std::thread::sleep(LOOK.min(until.saturating_duration_since(std::time::Instant::now())));
+    }
+    !stop.load(Ordering::Relaxed)
+}
+
 /// Follows one account's event stream on a thread and tells the window
 /// the modseq of each change. The window asks for the changes itself,
 /// from the modseq it last handled, so a notice that arrives while it is
@@ -523,34 +569,42 @@ struct ChangeNotice {
 /// by announcing the current modseq; the window hears of it only when it
 /// is above the last one passed on, which is when a change was missed
 /// while the stream was down.
+///
+/// The thread looks at `stop` at least once a second, while it waits for
+/// an event and while it pauses, and tells the window nothing once it is
+/// set: after a sign-out, nothing more comes from the previous account.
 fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>) {
     std::thread::spawn(move || {
-        let mut pause = 1u64;
+        let mut wait = 1u64;
         let mut last = 0i64;
         while !stop.load(Ordering::Relaxed) {
             let opened = std::time::Instant::now();
-            let stream = match client.events(&account) {
+            let mut stream = match client.events(&account) {
                 Ok(s) => s,
                 Err(e) => {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
                     if !e.is_retryable() {
                         // Refused for good, as an expired token is: the
                         // window hears of it, rather than going quiet.
-                        if !stop.load(Ordering::Relaxed) {
-                            let _ = app.emit("emx://refused", Failure::from(e));
-                        }
+                        let _ = app.emit("emx://refused", Failure::from(e));
                         return;
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(pause));
-                    pause = (pause * 2).min(60);
+                    if !pause(&stop, wait) {
+                        return;
+                    }
+                    wait = (wait * 2).min(60);
                     continue;
                 }
             };
-            for event in stream {
+            loop {
+                let next = stream.next_within(LOOK);
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
-                match event {
-                    Ok(emx_sdk::Event::Change { modseq }) if modseq > last => {
+                match next {
+                    emx_sdk::Next::Event(emx_sdk::Event::Change { modseq }) if modseq > last => {
                         last = modseq;
                         let _ = app.emit(
                             "emx://change",
@@ -560,17 +614,19 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>)
                             },
                         );
                     }
-                    Ok(_) => {}
-                    Err(_) => break,
+                    emx_sdk::Next::Event(_) | emx_sdk::Next::Quiet => {}
+                    emx_sdk::Next::Broken(_) | emx_sdk::Next::Ended => break,
                 }
             }
             // A stream that keeps ending at once must not become a busy
             // loop; one that lasted resets the pause.
             if opened.elapsed() < std::time::Duration::from_secs(10) {
-                std::thread::sleep(std::time::Duration::from_secs(pause));
-                pause = (pause * 2).min(60);
+                if !pause(&stop, wait) {
+                    return;
+                }
+                wait = (wait * 2).min(60);
             } else {
-                pause = 1;
+                wait = 1;
             }
         }
     });
@@ -646,6 +702,7 @@ pub fn run() {
             sign_in,
             resume,
             sign_out,
+            follow,
             me,
             mailboxes,
             messages,
@@ -685,7 +742,7 @@ mod tests {
                 assert!(next.trim_start().starts_with("async fn "), "not async: {next}");
             }
         }
-        assert!(commands >= 19, "found {commands} commands");
+        assert!(commands >= 20, "found {commands} commands");
     }
 
     #[test]
@@ -796,9 +853,35 @@ mod tests {
         let mut app = App::default();
         let n = app.begin();
         app.sign_out();
-        assert!(app.complete(n, a_client()).is_none());
+        assert!(!app.complete(n, a_client(), vec!["me".into()]));
         assert!(app.client.is_none());
         assert!(app.watching.is_none());
+        assert!(app.follow().is_none());
+    }
+
+    #[test]
+    fn the_accounts_are_followed_once_and_not_after_sign_out() {
+        let mut app = App::default();
+        let n = app.begin();
+        assert!(app.complete(n, a_client(), vec!["me".into(), "shared".into()]));
+        let (_, stop, accounts) = app.follow().unwrap();
+        assert_eq!(accounts, vec!["me".to_string(), "shared".to_string()]);
+        assert!(app.follow().is_none(), "a second call starts nothing");
+        app.sign_out();
+        assert!(stop.load(Ordering::Relaxed));
+
+        let n = app.begin();
+        assert!(app.complete(n, a_client(), vec!["me".into()]));
+        app.sign_out();
+        assert!(app.follow().is_none(), "nothing is followed after sign-out");
+    }
+
+    #[test]
+    fn a_pause_ends_early_on_stop() {
+        let stop = AtomicBool::new(true);
+        let started = std::time::Instant::now();
+        assert!(!pause(&stop, 60));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
@@ -806,8 +889,9 @@ mod tests {
         let mut app = App::default();
         let older = app.begin();
         let newer = app.begin();
-        let stop = app.complete(newer, a_client()).unwrap();
-        assert!(app.complete(older, a_client()).is_none());
+        assert!(app.complete(newer, a_client(), vec!["me".into()]));
+        let stop = app.watching.clone().unwrap();
+        assert!(!app.complete(older, a_client(), vec!["me".into()]));
         assert!(
             !stop.load(Ordering::Relaxed),
             "the newer sign-in's watchers go on"

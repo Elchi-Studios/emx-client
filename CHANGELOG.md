@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The desktop app stops following an account within a second of
+  signing out; a watcher could go on for up to a minute and tell the
+  window about the previous account. It starts following only once the
+  window listens, so the first change after signing in is not missed.
+  The SDK has `Events::next_within`, which waits for the next event at
+  most as long as asked and keeps the stream open.
 - The command line comes with the notices of the crates it is built
   from, in `cli/THIRD-PARTY-NOTICES.txt`, and
   `scripts/third-party-notices.py` writes them for the command line or

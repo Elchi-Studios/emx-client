@@ -7,7 +7,7 @@
 use crate::error::Error;
 use std::io::{BufRead, BufReader, Read};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 // The transport traits are outside ureq's semver promise, which is why
 // the workspace holds ureq to one minor version.
 use ureq::unversioned::resolver::DefaultResolver;
@@ -167,6 +167,26 @@ pub struct Events {
     lines: Receiver<std::io::Result<String>>,
     idle: Duration,
     done: bool,
+    /// The event read so far, kept across [`Events::next_within`] calls
+    /// that end before it is complete.
+    name: String,
+    data: String,
+    /// When the last line came, to tell silence from a short wait.
+    heard: Instant,
+}
+
+/// What [`Events::next_within`] found.
+#[derive(Debug)]
+pub enum Next {
+    /// The next event.
+    Event(Event),
+    /// The connection broke or stayed silent past the keepalives; open a
+    /// new stream.
+    Broken(Error),
+    /// The service ended the stream; open a new one.
+    Ended,
+    /// Nothing within the wait, and the stream is still alive.
+    Quiet,
 }
 
 impl Events {
@@ -203,7 +223,71 @@ impl Events {
             // caller opens a new one later as it would after a break.
             Err(_) => (mpsc::sync_channel(0).1, true),
         };
-        Events { lines, idle, done }
+        Events {
+            lines,
+            idle,
+            done,
+            name: String::new(),
+            data: String::new(),
+            heard: Instant::now(),
+        }
+    }
+
+    /// The next event, waiting at most `wait` for it, so that a program
+    /// can look up in between, for instance to stop following the
+    /// account at once instead of after the next event or the next
+    /// minute of silence. A stream silent past the keepalives is
+    /// [`Next::Broken`], however the waits were cut.
+    pub fn next_within(&mut self, wait: Duration) -> Next {
+        if self.done {
+            return Next::Ended;
+        }
+        let until = Instant::now() + wait;
+        loop {
+            let silent_until = self.heard + self.idle;
+            let now = Instant::now();
+            let quiet = until <= silent_until;
+            let deadline = if quiet { until } else { silent_until };
+            let line = match self.lines.recv_timeout(deadline.saturating_duration_since(now)) {
+                Ok(Ok(line)) => line,
+                Ok(Err(e)) => {
+                    self.done = true;
+                    return Next::Broken(Error::Transport(e.to_string()));
+                }
+                Err(RecvTimeoutError::Timeout) if quiet => return Next::Quiet,
+                Err(RecvTimeoutError::Timeout) => {
+                    self.done = true;
+                    return Next::Broken(Error::Transport(format!(
+                        "the event stream was silent for {} seconds",
+                        self.idle.as_secs()
+                    )));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.done = true;
+                    return Next::Ended;
+                }
+            };
+            self.heard = Instant::now();
+            let l = line.trim_end_matches(['\r', '\n']);
+            if l.is_empty() {
+                if self.name.is_empty() && self.data.is_empty() {
+                    continue;
+                }
+                let event = parse(&self.name, &self.data);
+                self.name.clear();
+                self.data.clear();
+                return Next::Event(event);
+            }
+            if let Some(rest) = l.strip_prefix("event:") {
+                self.name = rest.trim().to_string();
+            } else if let Some(rest) = l.strip_prefix("data:") {
+                if !self.data.is_empty() {
+                    self.data.push('\n');
+                }
+                self.data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
+            }
+            // Comments (keepalives) and ids are passed over.
+        }
     }
 }
 
@@ -214,46 +298,13 @@ impl Iterator for Events {
     /// ended the stream; an error, and then `None`, when the connection
     /// broke or stayed silent past the keepalives.
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-        let mut name = String::new();
-        let mut data = String::new();
         loop {
-            let line = match self.lines.recv_timeout(self.idle) {
-                Ok(Ok(line)) => line,
-                Ok(Err(e)) => {
-                    self.done = true;
-                    return Some(Err(Error::Transport(e.to_string())));
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    self.done = true;
-                    return Some(Err(Error::Transport(format!(
-                        "the event stream was silent for {} seconds",
-                        self.idle.as_secs()
-                    ))));
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    self.done = true;
-                    return None;
-                }
-            };
-            let l = line.trim_end_matches(['\r', '\n']);
-            if l.is_empty() {
-                if name.is_empty() && data.is_empty() {
-                    continue;
-                }
-                return Some(Ok(parse(&name, &data)));
+            match self.next_within(self.idle) {
+                Next::Event(e) => return Some(Ok(e)),
+                Next::Broken(e) => return Some(Err(e)),
+                Next::Ended => return None,
+                Next::Quiet => {}
             }
-            if let Some(rest) = l.strip_prefix("event:") {
-                name = rest.trim().to_string();
-            } else if let Some(rest) = l.strip_prefix("data:") {
-                if !data.is_empty() {
-                    data.push('\n');
-                }
-                data.push_str(rest.strip_prefix(' ').unwrap_or(rest));
-            }
-            // Comments (keepalives) and ids are passed over.
         }
     }
 }
@@ -310,6 +361,50 @@ mod tests {
         assert!(matches!(err, Error::Transport(_)), "{err}");
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(ev.next().is_none());
+    }
+
+    #[test]
+    fn a_short_wait_comes_back_without_ending_the_stream() {
+        let mut ev = Events::with_idle(Box::new(Silent), Duration::from_millis(600));
+        let started = std::time::Instant::now();
+        assert!(matches!(ev.next_within(Duration::from_millis(50)), Next::Quiet));
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // Short waits add up: the silence still breaks the stream.
+        let broken = loop {
+            match ev.next_within(Duration::from_millis(50)) {
+                Next::Quiet => assert!(started.elapsed() < Duration::from_secs(5)),
+                other => break other,
+            }
+        };
+        assert!(matches!(broken, Next::Broken(Error::Transport(_))), "{broken:?}");
+        assert!(matches!(ev.next_within(Duration::from_millis(50)), Next::Ended));
+    }
+
+    #[test]
+    fn an_event_split_across_waits_is_read_whole() {
+        struct Halves(Vec<&'static str>);
+        impl Read for Halves {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let Some(next) = self.0.pop() else { return Ok(0) };
+                std::thread::sleep(Duration::from_millis(150));
+                buf[..next.len()].copy_from_slice(next.as_bytes());
+                Ok(next.len())
+            }
+        }
+        let feed = vec!["data: {\"modseq\": 5}\n\n", "event: change\n"];
+        let mut ev = Events::with_idle(Box::new(Halves(feed)), IDLE);
+        let mut quiet = 0;
+        loop {
+            match ev.next_within(Duration::from_millis(20)) {
+                Next::Quiet => quiet += 1,
+                Next::Event(e) => {
+                    assert_eq!(e, Event::Change { modseq: 5 });
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(quiet > 0, "the waits came back in between");
     }
 
     #[test]

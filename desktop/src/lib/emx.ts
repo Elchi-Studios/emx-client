@@ -169,6 +169,8 @@ export const emx = {
   signIn: (baseUrl: string, token: string) => invoke<Me>('sign_in', { baseUrl, token }),
   resume: () => invoke<Me | null>('resume'),
   signOut: () => invoke<void>('sign_out'),
+  /// Starts the live updates of the sign-in, once the window listens.
+  follow: () => invoke<void>('follow'),
   me: () => invoke<Me>('me'),
   mailboxes: (account: string) => invoke<Mailbox[]>('mailboxes', { account }),
   messages: async (account: string, mailbox: string, cursor = '') => {
