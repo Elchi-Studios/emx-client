@@ -4,10 +4,31 @@
 
   let q = $state('');
   let timer: ReturnType<typeof setTimeout>;
+  let rows: HTMLDivElement;
   function typed(): void {
     clearTimeout(timer);
     timer = setTimeout(() => app.search(q), 250);
   }
+
+  // Another folder or account: the box loses the words of the last
+  // search, a search still waiting to start is dropped, and the list
+  // starts at the top instead of where the previous one was scrolled.
+  const folder = $derived(`${app.account}/${app.mailbox?.id ?? ''}`);
+  $effect(() => {
+    void folder;
+    clearTimeout(timer);
+    q = '';
+    if (rows) rows.scrollTop = 0;
+  });
+  // A new search starts at the top too. A search that ends because the
+  // folder was clicked again leaves the box empty as well.
+  $effect(() => {
+    if (!app.query) {
+      clearTimeout(timer);
+      q = '';
+    }
+    if (rows) rows.scrollTop = 0;
+  });
   function scrolled(e: Event): void {
     const el = e.currentTarget as HTMLElement;
     if (el.scrollTop + el.clientHeight > el.scrollHeight - 200) app.more();
@@ -18,7 +39,7 @@
   <header>
     <input id="search" class="field" placeholder="Search all folders" bind:value={q} oninput={typed} />
   </header>
-  <div class="list" onscroll={scrolled}>
+  <div class="list" onscroll={scrolled} bind:this={rows}>
     {#if app.query}
       <p class="muted small pad">{app.searching ? 'Searching' : `${app.messages.length}${app.cursor ? '+' : ''} found for "${app.query}"`}</p>
     {/if}

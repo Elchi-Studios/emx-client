@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The desktop app's search box empties when another folder or account
+  opens, and a search still waiting to start is dropped; the box kept
+  its words over the whole folder, and one more letter searched again.
+  A folder and a new search open at the top of the list instead of
+  where the previous list was scrolled, which could also load a second
+  page at once.
 - A message at the bottom of the desktop app's window stays for its
   full time; the timer of an earlier one cleared it early, so "Saved
   to ..." could vanish at once after a quick Archive.
