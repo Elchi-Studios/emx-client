@@ -49,6 +49,9 @@ pub struct Client {
     base: String,
     token: String,
     user_agent: String,
+    /// The certificates trusted for TLS: the bundled roots, or those
+    /// given to [`Client::trust_only`].
+    tls: ureq::tls::TlsConfig,
 }
 
 /// One page of a list, with the cursor for the next one.
@@ -83,14 +86,44 @@ impl Client {
         if !base.starts_with("https://") && !is_loopback_http(&base) {
             return Err(Error::Config(format!("the base URL must be https: {base}")));
         }
+        let tls = ureq::tls::TlsConfig::default();
         Ok(Client {
-            agent: agent(BODY_IDLE),
-            events_agent: crate::events::agent(crate::events::IDLE),
+            agent: agent(BODY_IDLE, &tls),
+            events_agent: crate::events::agent(crate::events::IDLE, &tls),
             idle: crate::events::IDLE,
             base,
             token: token.to_string(),
             user_agent: format!("emx-sdk/{}", env!("CARGO_PKG_VERSION")),
+            tls,
         })
+    }
+
+    /// The client, trusting only the certificate authorities in `pem`
+    /// (one or more `CERTIFICATE` blocks) instead of the bundled Mozilla
+    /// roots: for a network whose proxy inspects TLS with a company
+    /// authority, or a self-hosted service with a certificate from a
+    /// private one. For both kinds of server, put both kinds of authority
+    /// in the file, for instance the system's bundle and the company's.
+    pub fn trust_only(mut self, pem: &[u8]) -> Result<Client, Error> {
+        let mut certs = Vec::new();
+        for item in ureq::tls::parse_pem(pem) {
+            match item {
+                Ok(ureq::tls::PemItem::Certificate(c)) => certs.push(c),
+                Ok(_) => {}
+                Err(e) => return Err(Error::Config(format!("the certificate file cannot be read: {e}"))),
+            }
+        }
+        if certs.is_empty() {
+            return Err(Error::Config(
+                "the certificate file holds no certificate (PEM, BEGIN CERTIFICATE)".into(),
+            ));
+        }
+        self.tls = ureq::tls::TlsConfig::builder()
+            .root_certs(ureq::tls::RootCerts::new_with_certs(&certs))
+            .build();
+        self.agent = agent(BODY_IDLE, &self.tls);
+        self.events_agent = crate::events::agent(self.idle, &self.tls);
+        Ok(self)
     }
 
     /// Names the program in requests, as `name/version`, in front of the
@@ -105,7 +138,7 @@ impl Client {
     /// that cannot wait a minute.
     #[cfg(test)]
     pub(crate) fn with_idle(mut self, idle: Duration) -> Client {
-        self.events_agent = crate::events::agent(idle);
+        self.events_agent = crate::events::agent(idle, &self.tls);
         self.idle = idle;
         self
     }
@@ -113,7 +146,7 @@ impl Client {
     /// The client with a shorter standstill for bodies, for tests.
     #[cfg(test)]
     pub(crate) fn with_body_idle(mut self, idle: Duration) -> Client {
-        self.agent = agent(idle);
+        self.agent = agent(idle, &self.tls);
         self
     }
 
@@ -734,8 +767,9 @@ struct WebhookList {
 /// The agent for calls other than event streams: limits for connecting
 /// and for the answer to begin, and `body_idle` for a body standing
 /// still, in place of a limit for the whole call.
-fn agent(body_idle: Duration) -> ureq::Agent {
+fn agent(body_idle: Duration, tls: &ureq::tls::TlsConfig) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
+        .tls_config(tls.clone())
         .http_status_as_error(false)
         .timeout_connect(Some(CONNECT_TIMEOUT))
         .timeout_send_request(Some(CONNECT_TIMEOUT))
@@ -838,6 +872,25 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
+
+    /// A certificate authority made for the tests, and nothing else.
+    const TEST_CA: &str = "-----BEGIN CERTIFICATE-----\nMIIBgTCCASegAwIBAgIULVIfdk0OEI414Fv207B7NqYaVeEwCgYIKoZIzj0EAwIw\nFjEUMBIGA1UEAwwLRU1YIFRlc3QgQ0EwHhcNMjYxMDEyMDgxNDI4WhcNMzYxMDA5\nMDgxNDI4WjAWMRQwEgYDVQQDDAtFTVggVGVzdCBDQTBZMBMGByqGSM49AgEGCCqG\nSM49AwEHA0IABMQxApKR6BMyzrmJpzjCFgK3LCuZMaQs5csNtnRWvv3pVE0MUG9n\nGe0qFY4ZWqK/qudTY7pmeoDjXto5OVkICTujUzBRMB0GA1UdDgQWBBTJgvbUII3J\n1F1sN6YXHG6pQ/Bz0zAfBgNVHSMEGDAWgBTJgvbUII3J1F1sN6YXHG6pQ/Bz0zAP\nBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIHem6PpvSYs0oiiHhBbb\nNvLomSPGnYv/7xMNW9eMveNjAiEAlWnH/COIXNA8uLl61XwH9wBrR0xaJILOzAEp\nh44NOJQ=\n-----END CERTIFICATE-----\n";
+
+    #[test]
+    fn trust_only_takes_certificates_and_refuses_anything_else() {
+        let c = || Client::with_base_url("https://mail.example.ch", "emx_test").unwrap();
+        assert!(c().trust_only(TEST_CA.as_bytes()).is_ok());
+        let two = format!("{TEST_CA}{TEST_CA}");
+        assert!(c().trust_only(two.as_bytes()).is_ok());
+        for bad in [
+            "",
+            "not a certificate",
+            "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+        ] {
+            let e = c().trust_only(bad.as_bytes()).err().expect(bad);
+            assert!(matches!(e, Error::Config(_)), "{e}");
+        }
+    }
 
     /// A server that answers with a body of `chunks` pieces, `pause`
     /// apart.

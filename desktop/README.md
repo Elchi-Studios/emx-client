@@ -33,6 +33,11 @@ in the mail program; other kinds of link do nothing. HTML mail is shown
 on a white page in both themes. Search covers every folder, and Delete
 removes a message for good only when it is in Trash or Junk.
 
+The app trusts the Mozilla root certificates it is built with. Behind
+a proxy that inspects TLS, or for a self-hosted server with a
+certificate from a private authority, start it with `EMX_CA_FILE` set
+to a PEM file of the authorities to trust instead, as for `emx`.
+
 Keys: `j` `k` move, `e` archive, `#` or `Delete` trash, `u` read or
 unread, `s` flag, `r` reply, `a` reply all, `c` new message, `/` search,
 `Esc` close. They do nothing while the composer is open. In Trash,

@@ -96,7 +96,10 @@ Options for every command
   --version, --help
 
 The token comes from ~/.config/emx/config.json (emx login), or from
-EMX_TOKEN and EMX_BASE_URL in the environment. Reference:
+EMX_TOKEN and EMX_BASE_URL in the environment. EMX_CA_FILE names a PEM
+file of certificate authorities to trust instead of the bundled ones,
+for a network that inspects TLS or a server with a private authority.
+Reference:
 https://docs.elchi.dev/emx-api
 ";
 
@@ -245,8 +248,8 @@ fn run(command: &str, a: &Args) -> Result<(), Fail> {
     if cfg.token.is_empty() {
         return Err(Fail::Local("no token; run emx login, or set EMX_TOKEN".into()));
     }
-    let emx = Client::with_base_url(&cfg.base_url, &cfg.token)
-        .map_err(local)?
+    let emx = trusting(Client::with_base_url(&cfg.base_url, &cfg.token).map_err(local)?)
+        .map_err(Fail::Local)?
         .user_agent(&format!("emx-cli/{}", env!("CARGO_PKG_VERSION")));
     let account = match a.value("account") {
         // An address is looked up among the accounts the token reaches.
@@ -363,6 +366,20 @@ fn describe(e: &Fail) -> String {
 
 // --- Sign in -------------------------------------------------------------
 
+/// The client, trusting the certificate authorities in the file that
+/// `EMX_CA_FILE` names instead of the bundled ones, when it is set.
+fn trusting(c: Client) -> Result<Client, String> {
+    match std::env::var_os("EMX_CA_FILE") {
+        Some(p) if !p.is_empty() => {
+            let pem =
+                std::fs::read(&p).map_err(|e| format!("{}: {e}", std::path::Path::new(&p).display()))?;
+            c.trust_only(&pem)
+                .map_err(|e| format!("{}: {e}", std::path::Path::new(&p).display()))
+        }
+        _ => Ok(c),
+    }
+}
+
 fn login(a: &Args) -> Result<(), String> {
     // The file keeps what was given here, or what it had. `EMX_BASE_URL`
     // is for one run: the token is checked against it, but it is not
@@ -391,7 +408,7 @@ fn login(a: &Args) -> Result<(), String> {
         s
     };
     let token = token.trim().to_string();
-    let emx = Client::with_base_url(&check_url, &token).map_err(|e| e.to_string())?;
+    let emx = trusting(Client::with_base_url(&check_url, &token).map_err(|e| e.to_string())?)?;
     let me = emx.me().map_err(|e| match e {
         Error::Api { status: 401, .. } => "the service refused the token; copy it again".to_string(),
         e => e.to_string(),

@@ -27,8 +27,9 @@ pub(crate) const IDLE: Duration = Duration::from_secs(60);
 /// the stream. Without that, the thread reading a connection that died
 /// unnoticed would wait in its read, and keep the socket, until the
 /// body's limit of over an hour ran out, once for every reconnect.
-pub(crate) fn agent(idle: Duration) -> ureq::Agent {
+pub(crate) fn agent(idle: Duration, tls: &ureq::tls::TlsConfig) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
+        .tls_config(tls.clone())
         .http_status_as_error(false)
         .max_redirects(0)
         .build();

@@ -21,6 +21,13 @@ emx --json list | jq '.messages[].subject'
 readable by you alone; `EMX_TOKEN` and `EMX_BASE_URL` in the environment
 win over it, which is what a server uses.
 
+`emx` trusts the Mozilla root certificates it is built with. Behind a
+proxy that inspects TLS with a company authority, or for a self-hosted
+server with a certificate from a private one, set `EMX_CA_FILE` to a
+PEM file of the authorities to trust instead; for both kinds of server,
+put both in the file, for instance the system's bundle
+(`/etc/ssl/certs/ca-certificates.crt` on Debian) and the company's.
+
 `emx watch` follows the account and prints every change; with `--exec`
 it runs a command for each batch, with the changes as JSON on its
 standard input. A change is anything that happened to a message, from

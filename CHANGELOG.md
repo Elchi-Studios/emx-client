@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `EMX_CA_FILE` names a PEM file of certificate authorities that `emx`
+  and the desktop app trust instead of the bundled Mozilla roots, for a
+  network whose proxy inspects TLS and for a self-hosted server with a
+  certificate from a private authority; both failed with a certificate
+  error. The SDK has `Client::trust_only(pem)`.
 - A reply in the desktop app to a message that has only HTML, as most
   newsletters, many invoices and much Outlook mail, quotes its text;
   the quote used to be empty.

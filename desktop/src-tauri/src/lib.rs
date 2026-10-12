@@ -245,8 +245,15 @@ async fn connect(
     let (c, me) = blocking({
         let (base_url, token) = (base_url.clone(), token.clone());
         move || {
-            let c = Client::with_base_url(&base_url, &token)?
+            let mut c = Client::with_base_url(&base_url, &token)?
                 .user_agent(&format!("emx-desktop/{}", env!("CARGO_PKG_VERSION")));
+            // Certificate authorities to trust instead of the bundled
+            // ones, as for the command line.
+            if let Some(p) = std::env::var_os("EMX_CA_FILE").filter(|p| !p.is_empty()) {
+                let pem = fs::read(&p)
+                    .map_err(|e| Error::Config(format!("{}: {e}", std::path::Path::new(&p).display())))?;
+                c = c.trust_only(&pem)?;
+            }
             let me = c.me()?;
             Ok::<_, Error>((c, me))
         }
