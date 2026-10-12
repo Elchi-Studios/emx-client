@@ -38,6 +38,9 @@ a proxy that inspects TLS, or for a self-hosted server with a
 certificate from a private authority, start it with `EMX_CA_FILE` set
 to a PEM file of the authorities to trust instead, as for `emx`.
 
+The window opens where it was and as large as it was when it last
+closed, as long as that is still on a screen.
+
 Keys: `j` `k` move, `e` archive, `#` or `Delete` trash, `u` read or
 unread, `s` flag, `r` reply, `a` reply all, `c` new message, `/` search,
 `Esc` close. They do nothing while the composer is open. In Trash,

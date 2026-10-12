@@ -679,6 +679,110 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>)
     });
 }
 
+// --- The window's place ------------------------------------------------------
+
+/// Where the window was and how large, in the screen's own pixels, kept
+/// in the app's data folder when it closes.
+#[derive(Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
+struct Placement {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    #[serde(default)]
+    maximized: bool,
+}
+
+/// A screen's work area: left, top, width, height.
+type Area = (i32, i32, u32, u32);
+
+/// The placement to open with: the kept one if a large enough part of
+/// its title bar lies on a screen there is now, for a window that is
+/// not too small. A screen unplugged since must not leave the window
+/// out of reach.
+fn reachable(p: Placement, screens: &[Area], min: (u32, u32)) -> Option<Placement> {
+    if p.width < min.0 || p.height < min.1 {
+        return None;
+    }
+    // The top 40 pixels of the window, at least 100 of them across.
+    let bar = (p.x as i64, p.y as i64, p.width.min(100_000) as i64, 40i64);
+    let on = screens.iter().any(|&(x, y, w, h)| {
+        let (x, y, w, h) = (x as i64, y as i64, w as i64, h as i64);
+        let across = (bar.0 + bar.2).min(x + w) - bar.0.max(x);
+        let down = (bar.1 + bar.3).min(y + h) - bar.1.max(y);
+        across >= 100 && down >= 20
+    });
+    on.then_some(p)
+}
+
+fn placement_path(app: &AppHandle) -> Option<PathBuf> {
+    Some(app.path().app_data_dir().ok()?.join("window.json"))
+}
+
+/// Puts the window where it was when it last closed, if that is still
+/// on a screen. Anything that fails leaves it where it opened.
+fn restore_placement<R: tauri::Runtime>(app: &AppHandle, window: &tauri::WebviewWindow<R>, min: (u32, u32)) {
+    let Some(kept) = placement_path(app)
+        .and_then(|p| fs::read(p).ok())
+        .and_then(|raw| serde_json::from_slice::<Placement>(&raw).ok())
+    else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let min = ((min.0 as f64 * scale) as u32, (min.1 as f64 * scale) as u32);
+    let screens: Vec<Area> = window
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let a = m.work_area();
+            (a.position.x, a.position.y, a.size.width, a.size.height)
+        })
+        .collect();
+    let Some(p) = reachable(kept, &screens, min) else {
+        return;
+    };
+    let _ = window.set_size(tauri::PhysicalSize::new(p.width, p.height));
+    let _ = window.set_position(tauri::PhysicalPosition::new(p.x, p.y));
+    if p.maximized {
+        let _ = window.maximize();
+    }
+}
+
+/// Keeps where the window is, as it closes. A maximised or minimised
+/// window keeps the size it had before, from the file, with the flag.
+fn keep_placement<R: tauri::Runtime>(app: &AppHandle, window: &tauri::WebviewWindow<R>) {
+    let Some(path) = placement_path(app) else {
+        return;
+    };
+    if window.is_minimized().unwrap_or(true) {
+        return;
+    }
+    let maximized = window.is_maximized().unwrap_or(false);
+    let kept = fs::read(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<Placement>(&raw).ok());
+    let p = match (maximized, kept) {
+        (true, Some(k)) => Placement { maximized: true, ..k },
+        (true, None) => return,
+        (false, _) => {
+            let (Ok(pos), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+                return;
+            };
+            Placement {
+                x: pos.x,
+                y: pos.y,
+                width: size.width,
+                height: size.height,
+                maximized: false,
+            }
+        }
+    };
+    if let Ok(data) = serde_json::to_vec(&p) {
+        let _ = write_private(&path, &data);
+    }
+}
+
 // --- Links in a message ------------------------------------------------------
 
 /// Whether a link from a message may leave the app for the system's
@@ -740,9 +844,24 @@ pub fn run() {
                 .find(|w| w.label == "main")
                 .cloned()
                 .ok_or("the main window is not configured")?;
-            WebviewWindowBuilder::from_config(app.handle(), &config)?
+            // Hidden until it is where it was last time, so that it does
+            // not open in one place and jump to another.
+            let window = WebviewWindowBuilder::from_config(app.handle(), &config)?
+                .visible(false)
                 .on_new_window(|url, _| open_link(url))
                 .build()?;
+            let min = (
+                config.min_width.unwrap_or(0.0) as u32,
+                config.min_height.unwrap_or(0.0) as u32,
+            );
+            restore_placement(app.handle(), &window, min);
+            window.show()?;
+            let (handle, kept) = (app.handle().clone(), window.clone());
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { .. } = event {
+                    keep_placement(&handle, &kept);
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -833,6 +952,40 @@ mod tests {
         assert!(short.ends_with("\u{8acb}.pdf"), "{short}");
         let no_ext = "a".repeat(300);
         assert_eq!(safe_filename(&no_ext).len(), NAME_MAX);
+    }
+
+    #[test]
+    fn a_kept_placement_is_used_only_where_it_can_be_reached() {
+        let screen = [(0, 0, 1920, 1040)];
+        let p = Placement {
+            x: 100,
+            y: 80,
+            width: 1300,
+            height: 900,
+            maximized: false,
+        };
+        assert_eq!(reachable(p, &screen, (720, 480)), Some(p));
+        // On a second screen that is gone now.
+        assert_eq!(reachable(Placement { x: 2200, ..p }, &screen, (720, 480)), None);
+        // Its title bar above the screen.
+        assert_eq!(reachable(Placement { y: -100, ..p }, &screen, (720, 480)), None);
+        // Mostly off to the left, with 150 pixels of the bar left on it.
+        assert_eq!(
+            reachable(Placement { x: -1150, ..p }, &screen, (720, 480)),
+            Some(Placement { x: -1150, ..p })
+        );
+        // Too small to use.
+        assert_eq!(
+            reachable(Placement { width: 200, ..p }, &screen, (720, 480)),
+            None
+        );
+        // On the second of two screens.
+        let two = [(0, 0, 1920, 1040), (1920, 0, 2560, 1400)];
+        assert_eq!(
+            reachable(Placement { x: 2200, ..p }, &two, (720, 480)),
+            Some(Placement { x: 2200, ..p })
+        );
+        assert_eq!(reachable(p, &[], (720, 480)), None);
     }
 
     #[test]

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The desktop window opens where it was and as large as it was when it
+  last closed, maximised if it was, instead of at 1200 by 800 each
+  time. A place on a screen that is no longer there is not used.
 - A base URL that redirects, such as the public site
   `https://emxmail.ch`, is refused with the address it points to and a
   hint to use that one, under the code `redirect`; the error read only
