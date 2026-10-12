@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `emx watch` waits and tries again when the per-minute rate limit is
+  reached, as long as the service asks with `Retry-After`, instead of
+  ending; it ended when another program with the same token used up the
+  limit.
 - The desktop app writes its kept sign-in whole, through a file beside
   it, so a crash or a full disk can no longer leave it empty and sign
   the person out; and it makes the file readable by the person alone

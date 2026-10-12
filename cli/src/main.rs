@@ -909,17 +909,24 @@ fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> 
                     }
                     match catch_up(emx, account, &mut modseq, exec, json) {
                         Ok(()) => {}
-                        Err(Fail::Emx(e)) if e.is_retryable() => break,
+                        Err(Fail::Emx(e)) if e.is_retryable() => {
+                            // Waited out below, before the stream is opened
+                            // again; the pause starts no shorter than asked.
+                            backoff = backoff.max(retry_wait(&e, 1));
+                            break;
+                        }
                         Err(e) => return Err(e),
                     }
                 }
             }
-            // A refusal with a status below 500, the rate limit among them,
-            // came before anything was sent; after any other failure nobody
-            // knows.
-            Err(e @ (Error::Transport(_) | Error::Api { status: 500.., .. })) => {
-                eprintln!("emx: {e}; trying again in {backoff}s");
-                std::thread::sleep(std::time::Duration::from_secs(backoff));
+            // The network, the service, or the per-minute rate limit, which
+            // another program with the same token may have used up: wait,
+            // at least as long as the service asks, and try again. A
+            // daemon must not end over a refusal that passes.
+            Err(e) if e.is_retryable() => {
+                let wait = retry_wait(&e, backoff);
+                eprintln!("emx: {e}; trying again in {wait}s");
+                std::thread::sleep(std::time::Duration::from_secs(wait));
                 backoff = (backoff * 2).min(60);
                 continue;
             }
@@ -933,6 +940,17 @@ fn watch(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> 
         } else {
             backoff = 1;
         }
+    }
+}
+
+/// How long to wait before trying again: the pause so far, or longer when
+/// the service asks for longer with `Retry-After`, at most an hour.
+fn retry_wait(e: &Error, backoff: u64) -> u64 {
+    match e {
+        Error::Api {
+            retry_after: Some(s), ..
+        } => backoff.max(*s).min(3600),
+        _ => backoff,
     }
 }
 
@@ -1385,6 +1403,20 @@ mod tests {
     fn a_limit_outside_the_range_is_refused() {
         let m = local_message(list(&offline(), ME, &args(&["list", "--limit", "0"]), false));
         assert_eq!(m, "--limit is a number from 1 to 200");
+    }
+
+    #[test]
+    fn watch_waits_as_long_as_the_service_asks() {
+        let limited = Error::Api {
+            status: 429,
+            code: "rate_limited".into(),
+            message: "slow down".into(),
+            request_id: None,
+            retry_after: Some(20),
+        };
+        assert_eq!(retry_wait(&limited, 1), 20);
+        assert_eq!(retry_wait(&limited, 60), 60);
+        assert_eq!(retry_wait(&Error::Transport("gone".into()), 4), 4);
     }
 
     #[test]
