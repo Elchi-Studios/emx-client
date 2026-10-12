@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Every source file names its licence with an SPDX line: MPL-2.0, with
+  the notice of the licence's Exhibit A, for the SDK and the command
+  line; AGPL-3.0-only for the desktop app.
 - The SDK reads more of what the service sends: whether an
   organisation was cancelled or its subscription ended, and until when
   (`Tenant`), the list mail limits (`Limits::list_mail`), an

@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MPL-2.0
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! Where the token lives: a file only the person can read, in the place
 //! each system keeps such things. `EMX_TOKEN` and `EMX_BASE_URL` in the
 //! environment win over the file, for scripts and servers.

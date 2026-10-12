@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // What the window shows, and how it stays current: the lists are loaded
 // once per folder and then kept up to date from the change feed, the way
 // the web client does it.

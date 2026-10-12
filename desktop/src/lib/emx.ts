@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 // The window's side of the app: every call goes to the Rust side by
 // name, which holds the token and talks to EMX.
 

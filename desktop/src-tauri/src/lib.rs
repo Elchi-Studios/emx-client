@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! The Rust side of the app: holds the token, talks to EMX through the
 //! SDK, and follows the account so the window hears about new mail. The
 //! window never sees the token; it asks for what it needs by name.

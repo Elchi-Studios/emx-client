@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MPL-2.0
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 //! `emx`: EMX mail from the command line. Reads, sends, watches, and
 //! everything else a token can do, for a person at a terminal and for a
 //! script on a server.
