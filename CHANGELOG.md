@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `webhook::verify` refuses a timestamp far outside the range as stale;
+  `t=-9223372036854775808` made a receiver built with overflow checks
+  panic.
 - The desktop app shows HTML mail on a white page in dark mode too, as
   the web client does. Mail is written for a white page, and its dark
   text was unreadable on the dark panel.

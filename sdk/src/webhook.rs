@@ -65,7 +65,9 @@ pub fn verify_at(
         (Some(t), Some(s)) if s.len() == 32 => (t, s),
         _ => return Err(Refused::Malformed),
     };
-    if (now - ts).abs() > tolerance {
+    // Without overflow, whatever the header says: `t=-9223372036854775808`
+    // must be refused, not panic.
+    if now.abs_diff(ts) > tolerance.max(0).unsigned_abs() {
         return Err(Refused::Stale);
     }
     let mut signed = ts.to_string().into_bytes();
@@ -269,5 +271,10 @@ mod tests {
         );
         assert_eq!(verify_at(secret, "v1=zz", body, ts, 300), Err(Refused::Malformed));
         assert_eq!(verify_at(secret, "", body, ts, 300), Err(Refused::Malformed));
+        for t in [i64::MIN, i64::MAX] {
+            let header = format!("t={t},v1={sig}");
+            assert_eq!(verify_at(secret, &header, body, ts, 300), Err(Refused::Stale));
+            assert_eq!(verify_at(secret, &header, body, -ts, 300), Err(Refused::Stale));
+        }
     }
 }
