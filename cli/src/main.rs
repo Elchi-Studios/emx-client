@@ -45,7 +45,9 @@ Read
   part <id> --part P [--out FILE]
                              an attachment, to a file or stdout
   thread <id>                a conversation, oldest first
-  search <words...>          every word must occur, prefixes match
+  search <words...> [--mailbox M] [--limit N] [--cursor C]
+                             every word must occur, prefixes match; all folders
+                             unless M is given
 
 Change
   seen|unseen <ids...>       mark read or unread
@@ -161,7 +163,13 @@ fn spec(command: &str) -> Option<Spec> {
             "part <id> --part P [--out FILE]",
         ),
         "thread" => s(NONE, NONE, 1, Some(1), "thread <id>"),
-        "search" => s(NONE, NONE, 1, None, "search <words...>"),
+        "search" => s(
+            &["mailbox", "limit", "cursor"],
+            NONE,
+            1,
+            None,
+            "search <words...> [--mailbox M] [--limit N] [--cursor C]",
+        ),
         "seen" | "unseen" | "flag" | "unflag" => s(NONE, NONE, 1, None, "seen|unseen|flag|unflag <ids...>"),
         "move" => s(&["to"], NONE, 1, None, "move <ids...> --to M"),
         "delete" => s(NONE, NONE, 1, None, "delete <ids...>"),
@@ -252,7 +260,7 @@ fn run(command: &str, a: &Args) -> Result<(), Fail> {
         "read" => read(&emx, account, &rest, a, json),
         "part" => part(&emx, account, &rest, a),
         "thread" => thread(&emx, account, &rest, json),
-        "search" => search(&emx, account, &rest, json),
+        "search" => search(&emx, account, &rest, a, json),
         "seen" => keywords(&emx, account, &rest, &["$seen"], &[], json),
         "unseen" => keywords(&emx, account, &rest, &[], &["$seen"], json),
         "flag" => keywords(&emx, account, &rest, &["$flagged"], &[], json),
@@ -470,10 +478,7 @@ fn find_mailbox(emx: &Client, account: &str, want: &str) -> Result<Mailbox, Fail
 }
 
 fn list(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> {
-    let limit = a.number("limit", 30).map_err(config_err)?;
-    if !(1..=200).contains(&limit) {
-        return Err(Fail::Usage("--limit is a number from 1 to 200".into()));
-    }
+    let limit = page_limit(a)?;
     let mailbox = find_mailbox(emx, account, a.value("mailbox").unwrap_or("inbox"))?;
     let page = emx.messages(account, &mailbox.id, limit, a.value("cursor").unwrap_or(""))?;
     if json {
@@ -581,16 +586,39 @@ fn thread(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), 
     Ok(())
 }
 
-fn search(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), Fail> {
+fn search(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Result<(), Fail> {
     if rest.is_empty() {
         return Err(usage("search <words...>"));
     }
-    let list = emx.search(account, &rest.join(" "))?;
+    let limit = page_limit(a)?;
+    let mailbox = match a.value("mailbox") {
+        Some(m) => find_mailbox(emx, account, m)?.id,
+        None => String::new(),
+    };
+    let page = emx.search_page(
+        account,
+        &rest.join(" "),
+        &mailbox,
+        limit,
+        a.value("cursor").unwrap_or(""),
+    )?;
     if json {
-        return out(&list);
+        return out(&serde_json::json!({"messages": page.items, "cursor": page.cursor}));
     }
-    print_messages(&list);
+    print_messages(&page.items);
+    if !page.cursor.is_empty() {
+        outln!("\nmore: --cursor {}", page.cursor);
+    }
     Ok(())
+}
+
+/// `--limit` for a page: 30 when not given, at most 200.
+fn page_limit(a: &Args) -> Result<u32, Fail> {
+    let limit = a.number("limit", 30).map_err(config_err)?;
+    if !(1..=200).contains(&limit) {
+        return Err(Fail::Usage("--limit is a number from 1 to 200".into()));
+    }
+    Ok(limit)
 }
 
 // --- Change --------------------------------------------------------------

@@ -60,3 +60,33 @@ fn a_closed_pipe_ends_raw_output_quietly() {
     assert!(status.success(), "{status}: {err}");
     assert!(!err.contains("panicked"), "{err}");
 }
+
+fn search_hits(path: &str) -> (&'static str, String) {
+    if path.contains("cursor=") {
+        return ("application/json", r#"{"messages":[],"cursor":""}"#.into());
+    }
+    let one = r#"{"id":"x","mailboxId":"m1","receivedAt":"2026-09-24T07:41:12Z","subject":"Offerte","from":{"address":"anna@example.ch"},"modseq":8}"#;
+    let list = vec![one; 50].join(",");
+    (
+        "application/json",
+        format!(r#"{{"messages":[{list}],"cursor":"next50"}}"#),
+    )
+}
+
+#[test]
+fn search_says_where_the_next_page_starts() {
+    let base = server(search_hits);
+    let out = emx(&base)
+        .args(["search", "offerte", "--limit", "50"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.trim_end().ends_with("more: --cursor next50"), "{text}");
+    let out = emx(&base)
+        .args(["--json", "search", "offerte", "--cursor", "next50"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["cursor"], "");
+}

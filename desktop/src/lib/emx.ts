@@ -175,7 +175,10 @@ export const emx = {
   },
   message: async (account: string, id: string) => wholeFull(await invoke<FullMessage>('message', { account, id })),
   thread: async (account: string, id: string) => (await invoke<Message[]>('thread', { account, id })).map(whole),
-  search: async (account: string, query: string) => (await invoke<Message[]>('search', { account, query })).map(whole),
+  search: async (account: string, query: string, cursor = '') => {
+    const p = await invoke<{ messages: Message[]; cursor: string }>('search', { account, query, cursor });
+    return { messages: (p.messages ?? []).map(whole), cursor: p.cursor ?? '' };
+  },
   changes: async (account: string, since: number) => {
     const c = await invoke<Changes>('changes', { account, since });
     return { ...c, updated: (c.updated ?? []).map(whole), destroyed: c.destroyed ?? [] };

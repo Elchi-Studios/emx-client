@@ -165,11 +165,13 @@ class State {
   /// The next page of what the list shows. It belongs to the view it was
   /// asked for; when the folder changes meanwhile, it is dropped.
   async more(): Promise<void> {
-    if (!this.cursor || this.loading || this.searching || !this.mailbox || this.query) return;
+    if (!this.cursor || this.loading || this.searching || !this.mailbox) return;
     const n = this.view.current;
     this.loading = true;
     try {
-      const page = await emx.messages(this.account, this.mailbox.id, this.cursor);
+      const page = this.query
+        ? await emx.search(this.account, this.query, this.cursor)
+        : await emx.messages(this.account, this.mailbox.id, this.cursor);
       if (!this.view.is(n)) return;
       this.messages = appendPage(this.messages, page.messages);
       this.cursor = page.cursor;
@@ -187,13 +189,14 @@ class State {
     }
     const n = this.view.next();
     this.query = q;
+    this.cursor = '';
     this.searching = true;
     this.loading = false;
     try {
       const found = await emx.search(this.account, q);
       if (!this.view.is(n)) return;
-      this.messages = unique(found);
-      this.cursor = '';
+      this.messages = unique(found.messages);
+      this.cursor = found.cursor;
     } catch (e) {
       if (this.view.is(n)) this.fail(e);
     } finally {

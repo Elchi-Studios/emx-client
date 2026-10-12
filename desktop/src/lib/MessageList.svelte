@@ -19,7 +19,7 @@
   </header>
   <div class="list" onscroll={scrolled}>
     {#if app.query}
-      <p class="muted small pad">{app.searching ? 'Searching' : `${app.messages.length} found for "${app.query}"`}</p>
+      <p class="muted small pad">{app.searching ? 'Searching' : `${app.messages.length}${app.cursor ? '+' : ''} found for "${app.query}"`}</p>
     {/if}
     {#each app.messages as m (m.id)}
       {@const unseen = !m.keywords.includes('$seen')}

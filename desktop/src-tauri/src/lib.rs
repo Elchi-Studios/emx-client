@@ -298,10 +298,21 @@ async fn thread(state: State<'_, Shared>, account: String, id: String) -> Outcom
     blocking(move || c.thread(&account, &id)).await
 }
 
+/// One page of a search in every folder; pass the page's cursor for the
+/// next one.
 #[tauri::command]
-async fn search(state: State<'_, Shared>, account: String, query: String) -> Outcome<Vec<Message>> {
+async fn search(
+    state: State<'_, Shared>,
+    account: String,
+    query: String,
+    cursor: String,
+) -> Outcome<MessagePage> {
     let c = client(&state)?;
-    blocking(move || c.search(&account, &query)).await
+    let Page { items, cursor } = blocking(move || c.search_page(&account, &query, "", 50, &cursor)).await?;
+    Ok(MessagePage {
+        messages: items,
+        cursor,
+    })
 }
 
 #[tauri::command]

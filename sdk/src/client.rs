@@ -191,11 +191,36 @@ impl Client {
     }
 
     /// Searches subject, people and text; every word must occur, prefixes
-    /// match.
+    /// match. The first page, up to 50 hits, newest first; see
+    /// [`search_page`](Client::search_page) for the rest.
     pub fn search(&self, account: &str, query: &str) -> Result<Vec<Message>, Error> {
-        let v: Listed<Message> =
-            self.get(&format!("/api/accounts/{}/search", seg(account)), &[("q", query)])?;
-        Ok(v.messages)
+        Ok(self.search_page(account, query, "", 50, "")?.items)
+    }
+
+    /// One page of a search, newest first: in every folder, or in the
+    /// folder with the id `mailbox` when it is not empty. `limit` is at
+    /// most 200; pass the page's cursor for the next one.
+    pub fn search_page(
+        &self,
+        account: &str,
+        query: &str,
+        mailbox: &str,
+        limit: u32,
+        cursor: &str,
+    ) -> Result<Page<Message>, Error> {
+        let limit = limit.clamp(1, 200).to_string();
+        let mut q = vec![("q", query), ("limit", limit.as_str())];
+        if !mailbox.is_empty() {
+            q.push(("mailbox", mailbox));
+        }
+        if !cursor.is_empty() {
+            q.push(("cursor", cursor));
+        }
+        let v: MessagePage = self.get(&format!("/api/accounts/{}/search", seg(account)), &q)?;
+        Ok(Page {
+            items: v.messages,
+            cursor: v.cursor,
+        })
     }
 
     /// Everything that changed after `since`. Keep the returned modseq and

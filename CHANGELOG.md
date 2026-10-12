@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Search goes past the first 50 hits. The SDK has
+  `Client::search_page(account, query, mailbox, limit, cursor)`, which
+  can keep to one folder; `emx search` takes `--mailbox`, `--limit` and
+  `--cursor` and says where the next page starts, as `emx list` does;
+  and the desktop app loads more hits as the list is scrolled.
 - The desktop app no longer rebuilds an open HTML message when it is
   flagged or marked read: remote images let in stay, and the frame does
   not flicker or fetch its inline images again.

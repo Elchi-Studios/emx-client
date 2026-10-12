@@ -378,6 +378,7 @@ fn reading_messages() {
       "body":{"text":"Danke.","html":"<p>Danke.</p>","remoteImages":1,"attachments":[{"part":"2","filename":"Offerte.pdf","contentType":"application/pdf","size":300000}],
       "replyTo":[],"messageId":"<a@example.ch>","inReplyTo":"","references":[]}}"#;
     let list = Box::leak(format!(r#"{{"messages":[{MESSAGE}]}}"#).into_boxed_str());
+    let paged = Box::leak(format!(r#"{{"messages":[{MESSAGE}],"cursor":"c2"}}"#).into_boxed_str());
     let (base, seen) = server_with(vec![
         (200, full, ""),
         (
@@ -388,6 +389,7 @@ fn reading_messages() {
         (200, "%PDF-1.7", "Content-Type: application/pdf\r\n"),
         (200, list, ""),
         (200, list, ""),
+        (200, paged, ""),
     ]);
     let emx = Client::with_base_url(&base, "emx_test").unwrap();
     let m = emx.message(ME, "x1").unwrap();
@@ -403,6 +405,9 @@ fn reading_messages() {
     );
     assert_eq!(emx.thread(ME, "t1").unwrap()[0].id, "x1");
     assert_eq!(emx.search(ME, "offerte 2026").unwrap()[0].id, "x1");
+    let page = emx.search_page(ME, "offerte", "m1", 500, "c1").unwrap();
+    assert_eq!(page.items[0].id, "x1");
+    assert_eq!(page.cursor, "c2");
     let seen = seen.lock().unwrap();
     let paths: Vec<&str> = seen.iter().map(|s| s.path.as_str()).collect();
     assert_eq!(
@@ -412,7 +417,8 @@ fn reading_messages() {
             "/api/accounts/me/messages/x1/raw",
             "/api/accounts/me/messages/x1/parts/2",
             "/api/accounts/me/threads/t1",
-            "/api/accounts/me/search?q=offerte%202026",
+            "/api/accounts/me/search?q=offerte%202026&limit=50",
+            "/api/accounts/me/search?q=offerte&limit=200&mailbox=m1&cursor=c1",
         ]
     );
 }
