@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bareAddress, replyRecipients } from '../src/lib/mail.ts';
+import { bareAddress, frame, replyRecipients } from '../src/lib/mail.ts';
 
 test('own addresses are matched whole, in any case', () => {
   const m = { from: 'anna@example.ch', to: ['s@x.ch', 'lukas@x.ch'], cc: ['S@X.CH', 'info@x.ch'], replyTo: [] };
@@ -30,4 +30,12 @@ test('a reply to the persons own message goes to its recipients', () => {
 test('addresses compare without their names', () => {
   assert.equal(bareAddress('Anna Muster <Anna@Example.ch>'), 'anna@example.ch');
   assert.equal(bareAddress(' anna@example.ch '), 'anna@example.ch');
+});
+
+test('mail is shown on a white page in either theme', () => {
+  const doc = frame('<p>Hallo</p>');
+  assert.match(doc, /<meta name="color-scheme" content="light">/);
+  assert.match(doc, /background:#fff/);
+  assert.doesNotMatch(doc, /CanvasText|transparent/);
+  assert.match(doc, /<base target="_blank">/);
 });

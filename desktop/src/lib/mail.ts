@@ -5,10 +5,13 @@
 
 /// The document for a message's frame, around HTML the service has
 /// sanitised. Every link opens in a new window, which the app hands to
-/// the system.
+/// the system. HTML mail is written for a white page, its colours
+/// included, so it is shown on one in dark mode too, as the web client
+/// does: dark text of its own would be unreadable on a dark panel.
 export function frame(body: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>
-      body{margin:0;padding:4px 0;font:14px/1.5 -apple-system,system-ui,sans-serif;color:CanvasText;background:transparent;word-wrap:break-word}
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light"><base target="_blank"><style>
+      :root{color-scheme:light}
+      body{margin:0;padding:12px 16px;font:14px/1.5 -apple-system,system-ui,sans-serif;color:#1a1a1a;background:#fff;word-wrap:break-word}
       img{max-width:100%;height:auto} blockquote{border-left:3px solid #ccc;margin:8px 0;padding-left:10px;color:#666} pre{white-space:pre-wrap}
       </style></head><body>${body}</body></html>`;
 }

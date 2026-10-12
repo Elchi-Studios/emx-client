@@ -188,13 +188,15 @@
     align-items: center;
     font-size: 13px;
   }
+  /* A white page in both themes; see frame() in mail.ts. */
   iframe {
     flex: 1;
     border: 0;
-    width: 100%;
-    padding: 12px 20px;
-    background: transparent;
-    color-scheme: light dark;
+    width: calc(100% - 24px);
+    margin: 12px;
+    border-radius: var(--r);
+    background: #fff;
+    color-scheme: light;
   }
   iframe.dim {
     opacity: 0.6;

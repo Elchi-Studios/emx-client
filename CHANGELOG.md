@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The desktop app shows HTML mail on a white page in dark mode too, as
+  the web client does. Mail is written for a white page, and its dark
+  text was unreadable on the dark panel.
 - `emx` drops control characters from mail it shows on a terminal, so
   a message can no longer set the window's title, clear the screen or
   write the clipboard with escape sequences. `read --raw` on a terminal
