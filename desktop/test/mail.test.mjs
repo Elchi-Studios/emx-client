@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bareAddress, frame, replyRecipients } from '../src/lib/mail.ts';
+import { bareAddress, frame, htmlToText, quotable, replyRecipients } from '../src/lib/mail.ts';
 
 test('own addresses are matched whole, in any case', () => {
   const m = { from: 'anna@example.ch', to: ['s@x.ch', 'lukas@x.ch'], cc: ['S@X.CH', 'info@x.ch'], replyTo: [] };
@@ -38,4 +38,19 @@ test('mail is shown on a white page in either theme', () => {
   assert.match(doc, /background:#fff/);
   assert.doesNotMatch(doc, /CanvasText|transparent/);
   assert.match(doc, /<base target="_blank">/);
+});
+
+test('an html-only message is quoted as text', () => {
+  const html =
+    '<html><head><style>p{color:red}</style></head><body><!-- x --><p>Guten Tag&nbsp;Herr M&uuml;ller,</p>' +
+    '<p>Er sagte &#34;ja&#34; &amp;lt;b&amp;gt;<br>zweite Zeile</p><ul><li>eins</li><li>zwei</li></ul>' +
+    '<table><tr><td>Betrag</td><td>CHF 120.00</td></tr></table>' +
+    '<p><a href="https://shop.ch/pay?a=1&amp;b=2" target="_blank">Jetzt bezahlen</a> oder <a href="https://shop.ch">https://shop.ch</a></p></body></html>';
+  assert.equal(
+    htmlToText(html),
+    'Guten Tag Herr Müller,\n\nEr sagte "ja" &lt;b&gt;\nzweite Zeile\n\n- eins\n- zwei\n\nBetrag CHF 120.00\n\nJetzt bezahlen (https://shop.ch/pay?a=1&b=2) oder https://shop.ch'
+  );
+  assert.equal(quotable({ text: 'plain', html }), 'plain');
+  assert.equal(quotable({ text: '  \n', html: '<p>a</p>' }), 'a');
+  assert.equal(quotable({ text: '', html: '' }), '');
 });

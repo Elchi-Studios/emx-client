@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A reply in the desktop app to a message that has only HTML, as most
+  newsletters, many invoices and much Outlook mail, quotes its text;
+  the quote used to be empty.
 - `emx login` gives the terminal back as it was when Ctrl-C ends it
   while it asks for the token; the terminal stayed without echo. On
   Windows the token is no longer shown as it is typed. A base URL from

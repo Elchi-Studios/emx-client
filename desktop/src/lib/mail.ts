@@ -57,3 +57,83 @@ export function replyRecipients(
   if (out.length === 0 && first.length) out.push(first[0]);
   return out;
 }
+
+const named: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+  shy: '',
+  ndash: '-',
+  mdash: '-',
+  hellip: '...',
+  laquo: '«',
+  raquo: '»',
+  lsquo: "'",
+  rsquo: "'",
+  ldquo: '"',
+  rdquo: '"',
+  bdquo: '"',
+  euro: '€',
+  copy: '©',
+  reg: '®',
+  auml: 'ä',
+  ouml: 'ö',
+  uuml: 'ü',
+  Auml: 'Ä',
+  Ouml: 'Ö',
+  Uuml: 'Ü',
+  szlig: 'ß',
+  eacute: 'é',
+  egrave: 'è',
+  agrave: 'à',
+  ccedil: 'ç'
+};
+
+/// Character references decoded once each: `&amp;lt;` reads `&lt;`.
+function decodeEntities(s: string): string {
+  return s.replace(/&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);/g, (whole, ref: string) => {
+    if (ref[0] === '#') {
+      const n = ref[1] === 'x' || ref[1] === 'X' ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
+      if (n === 13) return '';
+      if (n === 160) return ' ';
+      return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : whole;
+    }
+    return ref in named ? named[ref] : whole;
+  });
+}
+
+/// The text of a message's HTML, for quoting in a reply when the message
+/// has no text part: paragraphs, line breaks, list items and table rows
+/// on lines of their own, links with their address, nothing of styles,
+/// scripts or comments, and no more than one empty line in a row.
+export function htmlToText(html: string): string {
+  let s = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(head|style|script|title)\b[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<a\b[^>]*?\bhref\s*=\s*"(https?:[^"]*)"[^>]*>([\s\S]*?)<\/a\s*>/gi, (_m, href: string, inner: string) => {
+      const label = inner.replace(/<[^>]*>/g, '').trim();
+      const url = decodeEntities(href);
+      return label && decodeEntities(label) !== url ? `${inner} (${href})` : inner || href;
+    })
+    .replace(/<br\b[^>]*>/gi, '\n')
+    .replace(/<li\b[^>]*>/gi, '\n- ')
+    .replace(/<\/?(p|div|tr|h[1-6]|ul|ol|table|blockquote|section|article|header|footer|hr)\b[^>]*>/gi, '\n')
+    .replace(/<\/t[dh]\s*>/gi, ' ')
+    .replace(/<[^>]*>/g, '');
+  s = decodeEntities(s);
+  return s
+    .split('\n')
+    .map((l) => l.replace(/[ \t\f\v ]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/// The text a reply quotes: the message's text part, or a text rendering
+/// of its HTML when it has none, as most newsletters and many invoices.
+export function quotable(body: { text: string; html: string }): string {
+  return body.text.trim() ? body.text : htmlToText(body.html);
+}

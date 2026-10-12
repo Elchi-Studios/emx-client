@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script lang="ts">
   import { app } from '$lib/state.svelte';
-  import { replyRecipients } from '$lib/mail';
+  import { quotable, replyRecipients } from '$lib/mail';
   import Sidebar from './Sidebar.svelte';
   import MessageList from './MessageList.svelte';
   import MessageView from './MessageView.svelte';
@@ -75,7 +75,8 @@
       own,
       all
     );
-    const quoted = (m.body.text || '')
+    // An HTML-only message is quoted from a text rendering of its HTML.
+    const quoted = quotable(m.body)
       .split('\n')
       .map((l) => '> ' + l)
       .join('\n');
