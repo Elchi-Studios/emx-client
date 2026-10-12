@@ -81,7 +81,7 @@
         <button class="btn sm" onclick={() => onreply(false)}>Reply</button>
         <button class="btn sm" onclick={() => onreply(true)}>Reply all</button>
         <button class="btn sm" onclick={() => app.moveTo(m, 'archive')}>Archive</button>
-        <button class="btn sm" onclick={() => app.trash(m)}>{app.mailbox?.role === 'trash' ? 'Delete' : 'Trash'}</button>
+        <button class="btn sm" onclick={() => app.trash(m)}>{app.forGood(m) ? 'Delete' : 'Trash'}</button>
         <button class="btn quiet sm" onclick={() => app.toggleFlag(m)}>{m.keywords.includes('$flagged') ? 'Unflag' : 'Flag'}</button>
         <button class="btn quiet sm" onclick={() => app.toggleSeen(m)}>{m.keywords.includes('$seen') ? 'Mark unread' : 'Mark read'}</button>
         {#if m.dmarc === 'fail'}<span class="warn small">DMARC failed: the sender may not be who it says</span>{/if}

@@ -5,7 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendPage, applyToFolder, applyToResults, Latest, unique, withKeyword } from '../src/lib/list.ts';
+import { appendPage, applyToFolder, applyToResults, deletesForGood, Latest, unique, withKeyword } from '../src/lib/list.ts';
 
 const msg = (id, receivedAt, mailboxId = 'inbox', keywords = []) => ({ id, receivedAt, mailboxId, keywords });
 const ids = (list) => list.map((m) => m.id);
@@ -56,6 +56,21 @@ test('search results take changes but no new messages', () => {
 test('keywords are set at most once', () => {
   assert.deepEqual(withKeyword(['$seen', '$flagged'], '$flagged', true), ['$seen', '$flagged']);
   assert.deepEqual(withKeyword(['$flagged', '$flagged'], '$flagged', false), []);
+});
+
+test('only a message in Trash or Junk is deleted for good', () => {
+  const boxes = [
+    { id: 'i', role: 'inbox' },
+    { id: 't', role: 'trash' },
+    { id: 'j', role: 'junk' },
+    { id: 'x', role: '' }
+  ];
+  // Searching from Trash finds an Inbox message: it goes to Trash.
+  assert.equal(deletesForGood({ mailboxId: 'i' }, boxes), false);
+  assert.equal(deletesForGood({ mailboxId: 'x' }, boxes), false);
+  assert.equal(deletesForGood({ mailboxId: 'gone' }, boxes), false);
+  assert.equal(deletesForGood({ mailboxId: 't' }, boxes), true);
+  assert.equal(deletesForGood({ mailboxId: 'j' }, boxes), true);
 });
 
 test('only the newest answer is applied', async () => {

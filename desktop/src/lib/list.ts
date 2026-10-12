@@ -73,6 +73,14 @@ export function withKeyword(keywords: string[], keyword: string, on: boolean): s
   return on ? [...rest, keyword] : rest;
 }
 
+/// Whether Delete removes a message for good: only when the message
+/// itself is in Trash or Junk. The open folder does not decide, since a
+/// search finds messages in every folder.
+export function deletesForGood(m: Pick<Message, 'mailboxId'>, mailboxes: { id: string; role: string }[]): boolean {
+  const role = mailboxes.find((b) => b.id === m.mailboxId)?.role;
+  return role === 'trash' || role === 'junk';
+}
+
 /// Hands out numbers for requests of one kind. Only the answer to the
 /// newest one is applied; an answer that comes back after a newer
 /// request was made is dropped, so a slow answer never overwrites a

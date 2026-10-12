@@ -3,7 +3,7 @@
 // the web client does it.
 
 import { emx, describe, type Me, type Mailbox, type Message, type FullMessage } from './emx';
-import { appendPage, applyToFolder, applyToResults, Latest, unique, withKeyword } from './list';
+import { appendPage, applyToFolder, applyToResults, deletesForGood, Latest, unique, withKeyword } from './list';
 
 export const roleOrder = ['inbox', 'drafts', 'sent', 'archive', 'junk', 'trash'];
 
@@ -221,9 +221,14 @@ class State {
     }
   }
 
+  /// Whether Delete removes `m` for good rather than moving it to Trash.
+  forGood(m: Message): boolean {
+    return deletesForGood(m, this.mailboxes);
+  }
+
   async trash(m: Message): Promise<void> {
-    if (this.mailbox?.role === 'trash') {
-      // In Trash this is the second step and cannot be undone.
+    if (this.forGood(m)) {
+      // In Trash or Junk this is the second step and cannot be undone.
       if (!(await this.ask('Delete this message for good? It cannot be brought back.', 'Delete'))) return;
       try {
         await emx.delete(this.account, [m.id]);

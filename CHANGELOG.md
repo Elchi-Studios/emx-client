@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The desktop app deletes a message for good only when the message
+  itself is in Trash or Junk. A search from Trash also finds messages in
+  other folders, and Delete on one of those deleted it for good; it now
+  moves it to Trash, and the button says so. The search box says that
+  it searches all folders.
 - Links in an HTML message open in the system's browser, and mail
   addresses in the mail program, from the desktop app; a click on one
   used to do nothing. Only `http`, `https` and `mailto` links leave the

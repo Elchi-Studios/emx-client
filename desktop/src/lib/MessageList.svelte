@@ -15,7 +15,7 @@
 
 <section>
   <header>
-    <input id="search" class="field" placeholder="Search {app.mailbox?.name ?? ''}" bind:value={q} oninput={typed} />
+    <input id="search" class="field" placeholder="Search all folders" bind:value={q} oninput={typed} />
   </header>
   <div class="list" onscroll={scrolled}>
     {#if app.query}
