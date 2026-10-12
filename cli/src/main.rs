@@ -10,6 +10,7 @@
 
 mod args;
 mod config;
+mod hidden;
 
 /// `println!` for standard output, through [`emit`].
 macro_rules! outln {
@@ -363,26 +364,34 @@ fn describe(e: &Fail) -> String {
 // --- Sign in -------------------------------------------------------------
 
 fn login(a: &Args) -> Result<(), String> {
-    let mut cfg = config::load().unwrap_or_default();
+    // The file keeps what was given here, or what it had. `EMX_BASE_URL`
+    // is for one run: the token is checked against it, but it is not
+    // written down, so that it does not outlast the environment it was
+    // set in.
+    let mut cfg = config::load_file().unwrap_or_default();
     if let Some(u) = a.value("base-url") {
         cfg.base_url = u.to_string();
     }
     if cfg.base_url.is_empty() {
         cfg.base_url = emx_sdk::DEFAULT_BASE_URL.to_string();
     }
+    let check_url = match std::env::var("EMX_BASE_URL") {
+        Ok(u) if a.value("base-url").is_none() && !u.trim().is_empty() => u.trim().to_string(),
+        _ => cfg.base_url.clone(),
+    };
     let stdin = std::io::stdin();
     let token = if stdin.is_terminal() {
         eprintln!("Make a token under Settings, Developer API, in the EMX web client.");
         eprint!("Token: ");
         let _ = std::io::stderr().flush();
-        read_hidden()?
+        hidden::read_line()?
     } else {
         let mut s = String::new();
         stdin.lock().read_to_string(&mut s).map_err(|e| e.to_string())?;
         s
     };
     let token = token.trim().to_string();
-    let emx = Client::with_base_url(&cfg.base_url, &token).map_err(|e| e.to_string())?;
+    let emx = Client::with_base_url(&check_url, &token).map_err(|e| e.to_string())?;
     let me = emx.me().map_err(|e| match e {
         Error::Api { status: 401, .. } => "the service refused the token; copy it again".to_string(),
         e => e.to_string(),
@@ -395,31 +404,14 @@ fn login(a: &Args) -> Result<(), String> {
         me.tenant.name,
         p.display()
     );
-    Ok(())
-}
-
-/// Reads a line without echo where the terminal allows it.
-fn read_hidden() -> Result<String, String> {
-    #[cfg(unix)]
-    let quiet = std::process::Command::new("stty")
-        .arg("-echo")
-        .stdin(std::process::Stdio::inherit())
-        .status()
-        .is_ok();
-    #[cfg(not(unix))]
-    let quiet = false;
-    let mut s = String::new();
-    let r = std::io::stdin().read_line(&mut s);
-    #[cfg(unix)]
-    if quiet {
-        let _ = std::process::Command::new("stty")
-            .arg("echo")
-            .stdin(std::process::Stdio::inherit())
-            .status();
-        eprintln!();
+    if check_url != cfg.base_url {
+        eprintln!(
+            "emx: the token was checked at {check_url} from EMX_BASE_URL, which is not kept; \
+             the file names {}. Use --base-url to keep another.",
+            cfg.base_url
+        );
     }
-    r.map_err(|e| e.to_string())?;
-    Ok(s)
+    Ok(())
 }
 
 // --- Read ----------------------------------------------------------------

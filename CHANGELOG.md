@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `emx login` gives the terminal back as it was when Ctrl-C ends it
+  while it asks for the token; the terminal stayed without echo. On
+  Windows the token is no longer shown as it is typed. A base URL from
+  `EMX_BASE_URL` is used to check the token but is no longer written
+  to the file, where it outlasted the environment it was set for;
+  `--base-url` keeps one.
 - The desktop app stops following an account within a second of
   signing out; a watcher could go on for up to a minute and tell the
   window about the previous account. It starts following only once the

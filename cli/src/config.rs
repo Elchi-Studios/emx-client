@@ -30,10 +30,9 @@ pub fn path() -> Result<PathBuf, String> {
     Ok(dir.join("emx").join("config.json"))
 }
 
-/// The file's settings, under the environment's. Without a home folder
-/// there is no file, which is fine when `EMX_TOKEN` is set, as under a
-/// service manager or in a container.
-pub fn load() -> Result<Config, String> {
+/// The file's settings alone, empty where it has none. Without a home
+/// folder there is no file.
+pub fn load_file() -> Result<Config, String> {
     let mut c = Config::default();
     if let Some(raw) = path().ok().and_then(|p| fs::read_to_string(p).ok()) {
         let v: serde_json::Value =
@@ -45,6 +44,14 @@ pub fn load() -> Result<Config, String> {
             .unwrap_or("")
             .to_string();
     }
+    Ok(c)
+}
+
+/// The file's settings, under the environment's. Without a home folder
+/// there is no file, which is fine when `EMX_TOKEN` is set, as under a
+/// service manager or in a container.
+pub fn load() -> Result<Config, String> {
+    let mut c = load_file()?;
     if let Ok(t) = std::env::var("EMX_TOKEN") {
         if !t.trim().is_empty() {
             c.token = t.trim().to_string();
