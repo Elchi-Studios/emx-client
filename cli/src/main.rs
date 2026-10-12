@@ -22,7 +22,7 @@ macro_rules! outp {
     };
 }
 
-use args::Args;
+use args::{Args, Spec};
 use emx_sdk::{Client, Draft, DraftAttachment, Error, Event, Mailbox, Message, ME};
 use std::io::{IsTerminal, Read, Write};
 use std::process::ExitCode;
@@ -94,7 +94,7 @@ https://docs.elchi.dev/emx-api
 fn main() -> ExitCode {
     let args = match Args::parse(std::env::args().skip(1)) {
         Ok(a) => a,
-        Err(e) => return fail(&e),
+        Err(e) => return fail_usage(&e),
     };
     if args.switch("version") {
         outln!("emx {}", env!("CARGO_PKG_VERSION"));
@@ -105,9 +105,16 @@ fn main() -> ExitCode {
         outp!("{USAGE}");
         return ExitCode::SUCCESS;
     }
+    let Some(spec) = spec(command) else {
+        return fail_usage(&format!("unknown command {command}; emx --help lists them"));
+    };
+    if let Err(e) = args.check(&spec) {
+        return fail_usage(&e);
+    }
     match run(command, &args) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => fail(&e),
+        Err(Fail::Usage(e)) => fail_usage(&e),
+        Err(e) => fail(&describe(&e)),
     }
 }
 
@@ -116,28 +123,121 @@ fn fail(msg: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-fn run(command: &str, a: &Args) -> Result<(), String> {
+/// A command line `emx` does not understand ends with status 2, as with
+/// other command-line tools, so that a script can tell it from a failure.
+fn fail_usage(msg: &str) -> ExitCode {
+    eprintln!("emx: {msg}");
+    ExitCode::from(2)
+}
+
+/// The options and arguments each command takes; see [`Args::check`].
+fn spec(command: &str) -> Option<Spec> {
+    const NONE: &[&str] = &[];
+    let s = |values, switches, min, max, usage| Spec {
+        values,
+        switches,
+        min,
+        max,
+        usage,
+    };
+    Some(match command {
+        "login" => s(&["base-url"], NONE, 0, Some(0), "login [--base-url URL]"),
+        "logout" => s(NONE, NONE, 0, Some(0), "logout"),
+        "me" => s(NONE, NONE, 0, Some(0), "me"),
+        "mailboxes" => s(NONE, NONE, 0, Some(0), "mailboxes"),
+        "list" => s(
+            &["mailbox", "limit", "cursor"],
+            NONE,
+            0,
+            Some(0),
+            "list [--mailbox M] [--limit N] [--cursor C]",
+        ),
+        "read" => s(NONE, &["raw", "html"], 1, Some(1), "read <id> [--raw] [--html]"),
+        "part" => s(
+            &["part", "out"],
+            NONE,
+            1,
+            Some(1),
+            "part <id> --part P [--out FILE]",
+        ),
+        "thread" => s(NONE, NONE, 1, Some(1), "thread <id>"),
+        "search" => s(NONE, NONE, 1, None, "search <words...>"),
+        "seen" | "unseen" | "flag" | "unflag" => s(NONE, NONE, 1, None, "seen|unseen|flag|unflag <ids...>"),
+        "move" => s(&["to"], NONE, 1, None, "move <ids...> --to M"),
+        "delete" => s(NONE, NONE, 1, None, "delete <ids...>"),
+        "snooze" => s(&["until"], NONE, 1, None, "snooze <ids...> --until RFC3339"),
+        "send" => s(
+            &[
+                "from",
+                "to",
+                "cc",
+                "bcc",
+                "subject",
+                "text",
+                "html",
+                "body-file",
+                "attach",
+                "reply-to",
+                "in-reply-to",
+                "idempotency-key",
+            ],
+            NONE,
+            0,
+            Some(0),
+            "send --to A --subject S [--text T]",
+        ),
+        "contacts" => s(
+            &["state"],
+            NONE,
+            0,
+            Some(0),
+            "contacts [--state approved|blocked]",
+        ),
+        "approve" => s(&["name"], NONE, 1, Some(1), "approve <address> [--name N]"),
+        "block" => s(NONE, NONE, 1, Some(1), "block <address>"),
+        "forget" => s(NONE, NONE, 1, Some(1), "forget <address>"),
+        "webhooks" => s(NONE, NONE, 0, Some(0), "webhooks"),
+        "webhook" => s(
+            &["events", "description"],
+            NONE,
+            1,
+            Some(2),
+            "webhook add|delete|test|enable|deliveries ...",
+        ),
+        "watch" => s(&["exec"], NONE, 0, Some(0), "watch [--exec CMD]"),
+        "api" => s(
+            &["data"],
+            NONE,
+            2,
+            Some(2),
+            "api GET|POST|PATCH|PUT|DELETE /api/... [--data JSON]",
+        ),
+        _ => return None,
+    })
+}
+
+fn run(command: &str, a: &Args) -> Result<(), Fail> {
     match command {
-        "login" => return login(a),
+        "login" => return login(a).map_err(Fail::Local),
         "logout" => {
-            config::remove()?;
+            config::remove().map_err(Fail::Local)?;
             outln!("Signed out. The token itself is revoked under Settings, Developer API.");
             return Ok(());
         }
         _ => {}
     }
-    let cfg = config::load()?;
+    let cfg = config::load().map_err(Fail::Local)?;
     if cfg.token.is_empty() {
-        return Err("no token; run emx login, or set EMX_TOKEN".into());
+        return Err(Fail::Local("no token; run emx login, or set EMX_TOKEN".into()));
     }
     let emx = Client::with_base_url(&cfg.base_url, &cfg.token)
-        .map_err(|e| e.to_string())?
+        .map_err(local)?
         .user_agent(&format!("emx-cli/{}", env!("CARGO_PKG_VERSION")));
     let account = match a.value("account") {
         // An address is looked up among the accounts the token reaches.
         Some(want) if want.contains('@') => {
-            let me = emx.me().map_err(|e| describe(&e.into()))?;
-            account_id(&me, want)?
+            let me = emx.me()?;
+            account_id(&me, want).map_err(Fail::Local)?
         }
         Some(want) => want.to_string(),
         None => ME.to_string(),
@@ -145,7 +245,7 @@ fn run(command: &str, a: &Args) -> Result<(), String> {
     let account = account.as_str();
     let json = a.switch("json");
     let rest: Vec<&str> = a.positional.iter().skip(1).map(|s| s.as_str()).collect();
-    let r = match command {
+    match command {
         "me" => me(&emx, json),
         "mailboxes" => mailboxes(&emx, account, json),
         "list" => list(&emx, account, a, json),
@@ -169,9 +269,10 @@ fn run(command: &str, a: &Args) -> Result<(), String> {
         "webhook" => webhook(&emx, account, &rest, a, json),
         "watch" => watch(&emx, account, a, json),
         "api" => api(&emx, &rest, a),
-        _ => return Err(format!("unknown command {command}; emx --help lists them")),
-    };
-    r.map_err(|e| describe(&e))
+        _ => Err(Fail::Usage(format!(
+            "unknown command {command}; emx --help lists them"
+        ))),
+    }
 }
 
 /// Why a command failed: EMX refused or could not be reached, or
@@ -181,6 +282,8 @@ fn run(command: &str, a: &Args) -> Result<(), String> {
 enum Fail {
     Emx(Error),
     Local(String),
+    /// The command line is wrong: exit status 2.
+    Usage(String),
 }
 
 impl From<Error> for Fail {
@@ -227,7 +330,7 @@ fn default_from(me: &emx_sdk::Me) -> Option<String> {
 
 fn describe(e: &Fail) -> String {
     match e {
-        Fail::Local(m) => m.clone(),
+        Fail::Local(m) | Fail::Usage(m) => m.clone(),
         Fail::Emx(Error::Api { status: 401, .. }) => {
             "the token was refused; run emx login with a current one".into()
         }
@@ -369,7 +472,7 @@ fn find_mailbox(emx: &Client, account: &str, want: &str) -> Result<Mailbox, Fail
 fn list(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> {
     let limit = a.number("limit", 30).map_err(config_err)?;
     if !(1..=200).contains(&limit) {
-        return Err(Fail::Local("--limit is a number from 1 to 200".into()));
+        return Err(Fail::Usage("--limit is a number from 1 to 200".into()));
     }
     let mailbox = find_mailbox(emx, account, a.value("mailbox").unwrap_or("inbox"))?;
     let page = emx.messages(account, &mailbox.id, limit, a.value("cursor").unwrap_or(""))?;
@@ -949,11 +1052,11 @@ fn output_failed(e: std::io::Error) -> ! {
 }
 
 fn usage(s: &str) -> Fail {
-    Fail::Local(format!("usage: emx {s}"))
+    Fail::Usage(format!("usage: emx {s}"))
 }
 
 fn config_err(s: String) -> Fail {
-    Fail::Local(s)
+    Fail::Usage(s)
 }
 
 /// A timestamp from the service, as date and minute with its zone: the
@@ -1143,7 +1246,7 @@ mod tests {
 
     fn local_message(r: Result<(), Fail>) -> String {
         match r {
-            Err(Fail::Local(m)) => m,
+            Err(Fail::Local(m) | Fail::Usage(m)) => m,
             Err(Fail::Emx(e)) => panic!("expected a local failure, got {e}"),
             Ok(()) => panic!("expected a failure"),
         }

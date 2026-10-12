@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 /// Starts a server that answers every request with `answer(path)`, a
 /// content type and a body, and returns its base URL. The path includes
 /// the query.
+#[allow(dead_code)]
 pub fn server(answer: fn(&str) -> (&'static str, String)) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();

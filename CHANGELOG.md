@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `emx` refuses an option a command does not take, and arguments it does
+  not take, with exit status 2 and nothing sent. `emx delete <id>
+  --dry-run` used to delete the message for good, `send --subjct S`
+  sent without a subject, and `send --attachment F` without the file.
+  There is no `--dry-run`. `-h` shows the help.
 - `emx send` keeps every `--to`, `--cc` and `--bcc` when one is given
   more than once; it used to keep the last one only. Any other flag given
   twice is now refused instead of the last value winning.

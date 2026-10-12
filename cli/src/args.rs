@@ -46,6 +46,23 @@ const WITH_VALUE: &[&str] = &[
 /// never silently wins over the first.
 const REPEATABLE: &[&str] = &["to", "cc", "bcc", "attach"];
 
+/// What a command accepts: its flags with a value, its switches, and how
+/// many arguments follow the command's name.
+pub struct Spec {
+    pub values: &'static [&'static str],
+    pub switches: &'static [&'static str],
+    pub min: usize,
+    pub max: Option<usize>,
+    pub usage: &'static str,
+}
+
+/// Options every command takes.
+const GLOBAL: &[&str] = &["account", "json", "help", "version"];
+
+fn unknown(command: &str, name: &str) -> String {
+    format!("emx {command} has no option --{name}; emx --help lists the options")
+}
+
 /// Whether a flag takes a value, for the command given so far. Only
 /// `send` gives `--html` a value; for every other command it is a switch.
 fn takes_value(command: Option<&str>, name: &str) -> bool {
@@ -74,6 +91,13 @@ impl Args {
                 only_positional = true;
                 continue;
             }
+            if arg == "-h" {
+                a.switches.push("help".into());
+                continue;
+            }
+            if !arg.starts_with("--") {
+                return Err(format!("unknown option {arg}; options start with --"));
+            }
             let name = arg.trim_start_matches('-');
             let (name, inline) = match name.split_once('=') {
                 Some((n, v)) => (n.to_string(), Some(v.to_string())),
@@ -97,6 +121,30 @@ impl Args {
             }
         }
         Ok(a)
+    }
+
+    /// Refuses a flag or a switch the command does not know, and more or
+    /// fewer arguments than it takes, so that a misspelt option never
+    /// runs the command without it: `delete <id> --dry-run` must not
+    /// delete. `--account`, `--json` and `--help` belong to every command.
+    pub fn check(&self, spec: &Spec) -> Result<(), String> {
+        let command = self.positional.first().map(|s| s.as_str()).unwrap_or("");
+        let known = |name: &str, own: &[&str]| GLOBAL.contains(&name) || own.contains(&name);
+        for name in self.values.keys() {
+            if !known(name, spec.values) {
+                return Err(unknown(command, name));
+            }
+        }
+        for name in &self.switches {
+            if !known(name, spec.switches) {
+                return Err(unknown(command, name));
+            }
+        }
+        let n = self.positional.len().saturating_sub(1);
+        if n < spec.min || spec.max.is_some_and(|max| n > max) {
+            return Err(format!("usage: emx {}", spec.usage));
+        }
+        Ok(())
     }
 
     pub fn value(&self, name: &str) -> Option<&str> {
@@ -201,6 +249,57 @@ mod tests {
         assert_eq!(a.value("html"), Some("<p>Hi</p>"));
         assert!(!a.switch("html"));
         assert!(parse(&["read", "x1", "--html=1"]).is_err());
+    }
+
+    fn spec(values: &'static [&'static str], max: Option<usize>) -> Spec {
+        Spec {
+            values,
+            switches: &["raw"],
+            min: max.unwrap_or(1).min(1),
+            max,
+            usage: "x <id>",
+        }
+    }
+
+    #[test]
+    fn unknown_options_and_stray_arguments_are_refused() {
+        let s = spec(&[], None);
+        let err = parse(&["delete", "x1", "--dry-run"])
+            .unwrap()
+            .check(&s)
+            .err()
+            .unwrap();
+        assert_eq!(
+            err,
+            "emx delete has no option --dry-run; emx --help lists the options"
+        );
+        // A misspelt flag with a value becomes a switch, and is refused.
+        let s = spec(&["subject"], Some(0));
+        assert!(parse(&["send", "--subjct", "Offerte"])
+            .unwrap()
+            .check(&s)
+            .is_err());
+        assert!(parse(&["send", "--attachment", "a.pdf"])
+            .unwrap()
+            .check(&s)
+            .is_err());
+        // A known flag of another command is refused too.
+        assert!(parse(&["send", "--mailbox", "Inbox"]).unwrap().check(&s).is_err());
+        assert!(parse(&["send", "--subject", "x"]).unwrap().check(&s).is_ok());
+        assert!(parse(&["--json", "send", "--account", "a"])
+            .unwrap()
+            .check(&s)
+            .is_ok());
+        // Arguments: too few and too many.
+        let s = spec(&[], Some(1));
+        assert_eq!(
+            parse(&["read"]).unwrap().check(&s).err().unwrap(),
+            "usage: emx x <id>"
+        );
+        assert!(parse(&["read", "a", "b"]).unwrap().check(&s).is_err());
+        assert!(parse(&["read", "a", "--raw"]).unwrap().check(&s).is_ok());
+        assert!(parse(&["read", "-x"]).is_err());
+        assert!(parse(&["read", "a", "-h"]).unwrap().switch("help"));
     }
 
     #[test]
