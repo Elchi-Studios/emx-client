@@ -60,6 +60,23 @@ pub struct Tenant {
     pub plan: String,
     #[serde(default)]
     pub billing_state: String,
+    /// Whether the organisation has a logo of its own.
+    #[serde(default)]
+    pub has_logo: bool,
+    /// Set when the organisation cancelled: it is read-only, and every
+    /// change is refused with `read_only`, until `purge_after`, when it is
+    /// deleted. RFC 3339.
+    #[serde(default)]
+    pub cancelled_at: Option<String>,
+    #[serde(default)]
+    pub purge_after: Option<String>,
+    /// Set while the subscription has ended: mail is received but nothing
+    /// is sent, and the organisation is cancelled at `lapses_at` unless
+    /// it is renewed. RFC 3339.
+    #[serde(default)]
+    pub subscription_ended_at: Option<String>,
+    #[serde(default)]
+    pub lapses_at: Option<String>,
 }
 
 /// A mailbox the person can open: their own, or a shared one.
@@ -124,6 +141,11 @@ pub struct Org {
     pub role: String,
     #[serde(default)]
     pub current: bool,
+    /// The person's id in that organisation.
+    #[serde(default)]
+    pub principal_id: String,
+    #[serde(default)]
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -138,6 +160,20 @@ pub struct Limits {
     pub monthly_recipients: i64,
     #[serde(default)]
     pub monthly_used: i64,
+    /// A list sender's numbers for its list mail; absent for everybody
+    /// else.
+    #[serde(default)]
+    pub list_mail: Option<ListLimits>,
+}
+
+/// The sending limits for list mail.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListLimits {
+    #[serde(default)]
+    pub hourly_recipients: i64,
+    #[serde(default)]
+    pub daily_recipients: i64,
 }
 
 /// A folder.
@@ -214,6 +250,11 @@ pub struct Message {
     /// True in a sealed mailbox: the body is ciphertext to the owner's key.
     #[serde(default)]
     pub sealed: bool,
+    /// In a sealed mailbox: the subject, people, date and snippet,
+    /// encrypted with age to the mailbox's key, base64. The fields above
+    /// are empty then.
+    #[serde(default)]
+    pub envelope: String,
     /// JMAP keywords: `$seen`, `$flagged`, `$answered`, `$draft`,
     /// `$forwarded`, and the person's own without `$`.
     #[serde(default)]
@@ -257,6 +298,10 @@ pub struct Body {
     pub html: String,
     #[serde(default)]
     pub remote_images: i64,
+    /// Who sent the message for the From address, when that is someone
+    /// else: "sent by X on behalf of Y".
+    #[serde(default)]
+    pub sender: Option<Address>,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
     #[serde(default)]
@@ -321,6 +366,10 @@ pub struct Contact {
     pub source: String,
     #[serde(default)]
     pub created_at: String,
+    /// In a sealed mailbox: the name, encrypted with age to the mailbox's
+    /// key, base64; `address` is then a token.
+    #[serde(default)]
+    pub label: String,
 }
 
 /// A message to send.

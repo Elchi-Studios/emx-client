@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The SDK reads more of what the service sends: whether an
+  organisation was cancelled or its subscription ended, and until when
+  (`Tenant`), the list mail limits (`Limits::list_mail`), an
+  organisation's `principal_id` and `state`, a sealed message's
+  `envelope`, who sent a message on someone's behalf (`Body::sender`),
+  and a sealed contact's `label`. All are optional.
 - `emx api PATCH` and `PUT` without `--data` are refused; they sent
   `null`, and `PATCH /api/me/prefs` with it can store preferences that
   are not an object. The SDK reads such preferences as none, so that

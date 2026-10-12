@@ -122,6 +122,29 @@ fn me_with_preferences_that_are_not_an_object() {
     assert!(me.prefs.is_empty());
 }
 
+/// Fields the service sends that a client shows: a cancelled
+/// organisation, list mail limits, mail sent on someone's behalf.
+#[test]
+fn optional_fields_are_read() {
+    let me: emx_sdk::Me = serde_json::from_str(
+        r#"{"id":"u1","tenant":{"id":"t1","hasLogo":true,"cancelledAt":"2026-10-01T00:00:00Z","purgeAfter":"2026-12-30T00:00:00Z"},
+          "limits":{"listMail":{"hourlyRecipients":5000,"dailyRecipients":50000}},
+          "orgs":[{"tenantId":"t1","principalId":"p1","state":"active"}]}"#,
+    )
+    .unwrap();
+    assert!(me.tenant.has_logo);
+    assert_eq!(me.tenant.cancelled_at.as_deref(), Some("2026-10-01T00:00:00Z"));
+    assert_eq!(me.tenant.lapses_at, None);
+    assert_eq!(me.limits.list_mail.unwrap().hourly_recipients, 5000);
+    assert_eq!(me.orgs[0].principal_id, "p1");
+    let body: emx_sdk::Body =
+        serde_json::from_str(r#"{"sender":{"name":"Anna","address":"anna@example.ch"}}"#).unwrap();
+    assert_eq!(body.sender.unwrap().address, "anna@example.ch");
+    let c: emx_sdk::Contact =
+        serde_json::from_str(r#"{"address":"tok","state":"approved","label":"YWdl"}"#).unwrap();
+    assert_eq!(c.label, "YWdl");
+}
+
 #[test]
 fn me_and_mailboxes() {
     let (base, seen) = server(vec![
