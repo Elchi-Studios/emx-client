@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `emx` runs with `EMX_TOKEN` set and no home folder, as under a
+  service manager or in a container; it used to refuse with "no home
+  directory to keep the token in". `emx login` writes its file whole,
+  through a file beside it, so a full disk or a crash cannot leave it
+  empty, and makes its folder readable by the person alone.
 - A large attachment no longer fails on a slow line: downloads and the
   upload of a send are limited by how long they stand still, a minute,
   instead of by how long they take as a whole (60 seconds for a

@@ -58,3 +58,19 @@ fn short_help_shows_the_help() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("emx, mail from the command line"));
 }
+
+/// Under a service manager or in a container there may be no home
+/// folder; `EMX_TOKEN` is enough.
+#[test]
+fn a_token_in_the_environment_needs_no_home() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_emx"))
+        .env_clear()
+        .env("EMX_TOKEN", "emx_test")
+        .env("EMX_BASE_URL", NOWHERE)
+        .arg("me")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("home"), "{err}");
+    assert!(err.contains("could not reach EMX"), "{err}");
+}
