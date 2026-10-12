@@ -13,8 +13,10 @@ These are the steps CI runs:
   scripted server there.
 - For a change to the desktop app: `npm run check` and `npm run build`
   in `desktop/`, then `cargo clippy -p emx-desktop --all-targets -- -D warnings`
-  and `cargo test -p emx-desktop`, which need Tauri's prerequisites for
-  your system.
+  and `cargo test -p emx-desktop`, which need Rust 1.88 and Tauri's
+  prerequisites for your system. Without them, a plain `cargo build`
+  or `cargo test` still works: the workspace's default members are the
+  SDK and the command line.
 
 A change to the desktop app has also been tried once with
 `npm run tauri dev`, which CI cannot do. Commits are small and say what

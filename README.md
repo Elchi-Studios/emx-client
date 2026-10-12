@@ -133,9 +133,15 @@ searches, replies and follows the account live. Drafts between
 sessions, a keychain for the token and system notifications are next.
 
 ```sh
-cargo test --workspace --exclude emx-desktop
+cargo test        # the SDK and the command line, the workspace's default members
 cargo clippy --workspace --exclude emx-desktop --all-targets -- -D warnings
 ```
+
+A plain `cargo build` or `cargo test` covers the SDK and the command
+line only, so they build on any system with Rust 1.85 or later. The
+desktop app needs Rust 1.88 and Tauri's prerequisites, GTK and WebKit
+on Linux among them; `cargo build -p emx-desktop` or `--workspace`
+builds it too.
 
 Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 Security matters go to the address in [SECURITY.md](SECURITY.md).

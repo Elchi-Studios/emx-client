@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["sdk", "cli", "desktop/src-tauri"]
+# The desktop app needs GTK and WebKit on Linux, and Rust 1.88 (its own
+# rust-version): a plain `cargo build` or `cargo test` leaves it out, so
+# the SDK and the command line build anywhere with 1.85.
 default-members = ["sdk", "cli"]
 
 [workspace.package]

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The README and CONTRIBUTING say that a plain `cargo build` or
+  `cargo test` covers the SDK and the command line only, and what the
+  desktop app needs besides (Rust 1.88, GTK and WebKit on Linux).
+  `source-map-js`, used by the desktop app's build only, is at 1.2.2,
+  past a denial-of-service fix; the remaining `npm audit` findings are
+  low and in the build tools, not in the app.
 - The desktop window opens where it was and as large as it was when it
   last closed, maximised if it was, instead of at 1200 by 800 each
   time. A place on a screen that is no longer there is not used.
