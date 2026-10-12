@@ -2,6 +2,8 @@
 <script lang="ts">
   import { app } from '$lib/state.svelte';
   import { emx, newKey } from '$lib/emx';
+  import { fits } from '$lib/mail';
+  import { size } from '$lib/state.svelte';
 
   const start = app.composing ?? {};
   let from = $state(app.me?.sendFrom.find((s) => s.primary && s.address.toLowerCase() === app.accountName.toLowerCase())?.address ?? app.me?.sendFrom[0]?.address ?? '');
@@ -10,24 +12,32 @@
   let showCc = $state(false);
   let subject = $state(start.subject ?? '');
   let text = $state(start.text ?? '');
-  let files = $state<{ filename: string; contentType: string; data: string }[]>([]);
+  let files = $state<{ filename: string; contentType: string; data: string; size: number }[]>([]);
   let busy = $state(false);
   // One key for this message, however often Send is pressed. After a
   // timeout the message may have gone out; sending again with the same
   // key sends it if it did not, and not a second time if it did.
   const idempotencyKey = newKey();
 
+  // The largest message the service takes, attachments and text
+  // together, as mail encodes them.
+  const max = app.me?.limits?.maxMessageBytes ?? 0;
+
   async function attach(e: Event): Promise<void> {
     const input = e.currentTarget as HTMLInputElement;
     for (const f of input.files ?? []) {
-      if (f.size > 25 * 1024 * 1024) {
-        app.fail(`${f.name} is larger than 25 MB`);
+      // Checked before the file is read: a message over the limit is
+      // refused by the service only after the whole upload.
+      if (!fits([...files.map((x) => x.size), f.size], text, max)) {
+        app.fail(
+          `${f.name} (${size(f.size)}) does not fit: a message can be at most ${size(max)}, and attachments take about a third more as mail.`
+        );
         continue;
       }
       const buf = new Uint8Array(await f.arrayBuffer());
       let bin = '';
       for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-      files = [...files, { filename: f.name, contentType: f.type || 'application/octet-stream', data: btoa(bin) }];
+      files = [...files, { filename: f.name, contentType: f.type || 'application/octet-stream', data: btoa(bin), size: f.size }];
     }
     input.value = '';
   }
@@ -44,7 +54,7 @@
         text,
         inReplyTo: start.inReplyTo,
         references: start.references,
-        attachments: files
+        attachments: files.map(({ filename, contentType, data }) => ({ filename, contentType, data }))
       };
       const n = await emx.send(draft, idempotencyKey);
       app.say(`Sent to ${n} recipient${n === 1 ? '' : 's'}`);

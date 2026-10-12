@@ -40,6 +40,8 @@ export interface Me {
   accounts: Account[];
   sendFrom: SendFrom[];
   prefs: Record<string, unknown>;
+  /** What the person may send; `maxMessageBytes` is the whole message. */
+  limits?: { maxMessageBytes?: number };
 }
 export interface Mailbox {
   id: string;

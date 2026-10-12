@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bareAddress, frame, htmlToText, quotable, replyRecipients } from '../src/lib/mail.ts';
+import { bareAddress, encodedSize, fits, frame, htmlToText, quotable, replyRecipients } from '../src/lib/mail.ts';
 
 test('own addresses are matched whole, in any case', () => {
   const m = { from: 'anna@example.ch', to: ['s@x.ch', 'lukas@x.ch'], cc: ['S@X.CH', 'info@x.ch'], replyTo: [] };
@@ -53,4 +53,14 @@ test('an html-only message is quoted as text', () => {
   assert.equal(quotable({ text: 'plain', html }), 'plain');
   assert.equal(quotable({ text: '  \n', html: '<p>a</p>' }), 'a');
   assert.equal(quotable({ text: '', html: '' }), '');
+});
+
+test('attachments are measured as mail measures them', () => {
+  const max = 50 * 1024 * 1024;
+  assert.equal(fits([30 * 1024 * 1024], '', max), true);
+  // 40 MB of files come to about 54 MB as mail.
+  assert.equal(fits([20 * 1024 * 1024, 20 * 1024 * 1024], '', max), false);
+  assert.equal(fits([40 * 1024 * 1024], '', 0), true);
+  assert.equal(fits([], 'Hallo', undefined), true);
+  assert.ok(encodedSize(3, 1) >= 4);
 });

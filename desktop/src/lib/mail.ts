@@ -137,3 +137,19 @@ export function htmlToText(html: string): string {
 export function quotable(body: { text: string; html: string }): string {
   return body.text.trim() ? body.text : htmlToText(body.html);
 }
+
+/// The size a message with attachments of `bytes` in all comes to as
+/// mail: base64 makes three bytes four, in lines of 76 characters and a
+/// line end, and each part has headers. The service measures this
+/// against its limit.
+export function encodedSize(bytes: number, parts: number): number {
+  return Math.ceil(bytes / 3) * 4 * (78 / 76) + parts * 512;
+}
+
+/// Whether attachments of `sizes` fit a message of at most `max` bytes
+/// with `text` besides; `max` 0 or missing means the service did not say.
+export function fits(sizes: number[], text: string, max: number | undefined): boolean {
+  if (!max) return true;
+  const bytes = sizes.reduce((a, b) => a + b, 0);
+  return encodedSize(bytes, sizes.length) + new TextEncoder().encode(text).length * 2 + 4096 <= max;
+}

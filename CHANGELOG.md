@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The desktop composer checks attachments against the largest message
+  EMX takes, as mail encodes them, before reading a file; a message
+  over the limit was uploaded whole and only then refused. Saving an
+  attachment shortens a name too long for the file system, such as 90
+  Chinese characters, in front of its extension, and gives a name
+  Windows keeps for a device (`CON`, `NUL.pdf`) a leading `_`; both
+  failed to save.
 - The desktop app's search box empties when another folder or account
   opens, and a search still waiting to start is dropped; the box kept
   its words over the whole folder, and one more letter searched again.
