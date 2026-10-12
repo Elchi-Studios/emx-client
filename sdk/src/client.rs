@@ -9,10 +9,24 @@ use std::time::Duration;
 /// error carries it as `retry_after`.
 const MAX_WAIT: Duration = Duration::from_secs(5);
 
-/// How long a send may take. The service gives the submission two
-/// minutes; a client that gave up earlier would leave the person not
-/// knowing whether the message went.
+/// How long a send may wait for its answer once the message is uploaded.
+/// The service gives the submission two minutes; a client that gave up
+/// earlier would leave the person not knowing whether the message went.
 const SEND_TIMEOUT: Duration = Duration::from_secs(150);
+
+/// How long any other call may wait for its answer to begin.
+const ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a connection may take, TLS included.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a body may stand still, up or down, before the call fails.
+/// There is no limit for the whole transfer: a large attachment on a slow
+/// line takes as long as it takes, as long as it moves.
+const BODY_IDLE: Duration = Duration::from_secs(60);
+
+/// The outer bound for a body, far above any transfer that moves.
+const BODY_BOUND: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The API, reached with one token.
 ///
@@ -63,13 +77,8 @@ impl Client {
         if !base.starts_with("https://") && !is_loopback_http(&base) {
             return Err(Error::Config(format!("the base URL must be https: {base}")));
         }
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(60)))
-            .max_redirects(0)
-            .build();
         Ok(Client {
-            agent: config.into(),
+            agent: agent(BODY_IDLE),
             events_agent: crate::events::agent(crate::events::IDLE),
             idle: crate::events::IDLE,
             base,
@@ -92,6 +101,13 @@ impl Client {
     pub(crate) fn with_idle(mut self, idle: Duration) -> Client {
         self.events_agent = crate::events::agent(idle);
         self.idle = idle;
+        self
+    }
+
+    /// The client with a shorter standstill for bodies, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_body_idle(mut self, idle: Duration) -> Client {
+        self.agent = agent(idle);
         self
     }
 
@@ -516,7 +532,7 @@ impl Client {
                 _ => self.agent.post(&url),
             };
             if let Some(t) = timeout {
-                req = req.config().timeout_global(Some(t)).build();
+                req = req.config().timeout_recv_response(Some(t)).build();
             }
             if let Some(k) = key {
                 req = req.header("Idempotency-Key", k);
@@ -709,6 +725,24 @@ struct WebhookList {
     events: Vec<String>,
 }
 
+/// The agent for calls other than event streams: limits for connecting
+/// and for the answer to begin, and `body_idle` for a body standing
+/// still, in place of a limit for the whole call.
+fn agent(body_idle: Duration) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_send_request(Some(CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(ANSWER_TIMEOUT))
+        // Named, so that a read or write of a body is known as one and
+        // gets `body_idle`; the bound itself is only there to be named.
+        .timeout_send_body(Some(BODY_BOUND))
+        .timeout_recv_body(Some(BODY_BOUND))
+        .max_redirects(0)
+        .build();
+    crate::events::body_idle_agent(config, body_idle)
+}
+
 /// A new key for [`Client::send_mail_with_key`], which no other send
 /// will use: 128 bits from the randomly seeded hasher of the standard
 /// library, with the time and a counter folded in so that two keys made
@@ -798,6 +832,59 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
+
+    /// A server that answers with a body of `chunks` pieces, `pause`
+    /// apart.
+    fn slow_body(chunks: usize, pause: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                line.clear();
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: {chunks}\r\n\r\n"
+            );
+            for _ in 0..chunks {
+                std::thread::sleep(pause);
+                if stream.write_all(b"x").and_then(|_| stream.flush()).is_err() {
+                    return;
+                }
+            }
+        });
+        base
+    }
+
+    /// A download that keeps moving is not cut off, however long it takes
+    /// as a whole; one that stands still is.
+    #[test]
+    fn a_body_is_limited_by_standstill_not_by_its_length() {
+        let idle = Duration::from_millis(400);
+        let base = slow_body(8, Duration::from_millis(150));
+        let emx = Client::with_base_url(&base, "emx_test")
+            .unwrap()
+            .with_body_idle(idle);
+        let started = std::time::Instant::now();
+        let (data, _) = emx.part("me", "x1", "2").unwrap();
+        assert_eq!(data.len(), 8);
+        assert!(started.elapsed() > idle * 2, "took {:?}", started.elapsed());
+
+        let base = slow_body(2, Duration::from_secs(3));
+        let emx = Client::with_base_url(&base, "emx_test")
+            .unwrap()
+            .with_body_idle(idle);
+        let started = std::time::Instant::now();
+        assert!(matches!(emx.part("me", "x1", "2"), Err(Error::Transport(_))));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
 
     /// A stream that announces its modseq and then says nothing, the way
     /// one does after the network went away without a word. Once the

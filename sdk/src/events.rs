@@ -8,6 +8,7 @@ use ureq::unversioned::resolver::DefaultResolver;
 use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, DefaultConnector, NextTimeout, Transport,
 };
+use ureq::Timeout;
 
 /// How long the stream may stay silent before it counts as broken. The
 /// service sends a keepalive every 25 seconds, so a minute without a
@@ -25,13 +26,33 @@ pub(crate) fn agent(idle: Duration) -> ureq::Agent {
         .http_status_as_error(false)
         .max_redirects(0)
         .build();
-    let connector = DefaultConnector::new().chain(ReadLimit(idle));
+    let connector = DefaultConnector::new().chain(ReadLimit {
+        idle,
+        bodies_only: false,
+    });
+    ureq::Agent::with_parts(config, connector, DefaultResolver::default())
+}
+
+/// The agent for every other call. A body, a large attachment down or a
+/// send with attachments up, may take as long as it takes while bytes
+/// keep moving: only `idle` without one, in a read or a write, ends it.
+/// A limit for the whole transfer would fail every large attachment on a
+/// slow line, and fail it again on each attempt. Connecting and waiting
+/// for the answer to begin have limits of their own, set per call.
+pub(crate) fn body_idle_agent(config: ureq::config::Config, idle: Duration) -> ureq::Agent {
+    let connector = DefaultConnector::new().chain(ReadLimit {
+        idle,
+        bodies_only: true,
+    });
     ureq::Agent::with_parts(config, connector, DefaultResolver::default())
 }
 
 /// Wraps each connection, plain or TLS, in [`Limited`].
 #[derive(Debug)]
-struct ReadLimit(Duration);
+struct ReadLimit {
+    idle: Duration,
+    bodies_only: bool,
+}
 
 impl Connector<Box<dyn Transport>> for ReadLimit {
     type Out = Limited;
@@ -41,17 +62,33 @@ impl Connector<Box<dyn Transport>> for ReadLimit {
         _: &ConnectionDetails,
         chained: Option<Box<dyn Transport>>,
     ) -> Result<Option<Limited>, ureq::Error> {
-        Ok(chained.map(|inner| Limited { inner, idle: self.0 }))
+        Ok(chained.map(|inner| Limited {
+            inner,
+            idle: self.idle,
+            bodies_only: self.bodies_only,
+        }))
     }
 }
 
-/// A connection whose reads wait at most `idle`, however long the
-/// request's own limits would allow. A read that times out fails, the
-/// reader ends, and the connection is closed.
+/// A connection whose reads and writes wait at most `idle` each, however
+/// long the request's own limits would allow; with `bodies_only`, only
+/// while a body is sent or received. A read or write that times out
+/// fails, the reader ends, and the connection is closed.
 #[derive(Debug)]
 struct Limited {
     inner: Box<dyn Transport>,
     idle: Duration,
+    bodies_only: bool,
+}
+
+impl Limited {
+    fn cap(&self, mut timeout: NextTimeout) -> NextTimeout {
+        let body = matches!(timeout.reason, Timeout::SendBody | Timeout::RecvBody);
+        if (body || !self.bodies_only) && *timeout.after > self.idle {
+            timeout.after = self.idle.into();
+        }
+        timeout
+    }
 }
 
 impl Transport for Limited {
@@ -60,13 +97,16 @@ impl Transport for Limited {
     }
 
     fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
+        let timeout = if self.bodies_only {
+            self.cap(timeout)
+        } else {
+            timeout
+        };
         self.inner.transmit_output(amount, timeout)
     }
 
-    fn await_input(&mut self, mut timeout: NextTimeout) -> Result<bool, ureq::Error> {
-        if *timeout.after > self.idle {
-            timeout.after = self.idle.into();
-        }
+    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
+        let timeout = self.cap(timeout);
         self.inner.await_input(timeout)
     }
 

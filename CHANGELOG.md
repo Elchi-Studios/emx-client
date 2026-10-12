@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A large attachment no longer fails on a slow line: downloads and the
+  upload of a send are limited by how long they stand still, a minute,
+  instead of by how long they take as a whole (60 seconds for a
+  download, two and a half minutes for a send). Connecting and waiting
+  for the answer keep their limits.
 - A send refused with `429 hourly_limit` (more recipients outside the
   organisation than the hour allows) is no longer tried three times:
   of the 429 refusals only the per-minute rate limit is tried again.
