@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `emx api PATCH` and `PUT` without `--data` are refused; they sent
+  `null`, and `PATCH /api/me/prefs` with it can store preferences that
+  are not an object. The SDK reads such preferences as none, so that
+  `me()`, and with it signing in from the command line and the desktop
+  app, keeps working.
 - `webhook::verify` refuses a timestamp far outside the range as stale;
   `t=-9223372036854775808` made a receiver built with overflow checks
   panic.

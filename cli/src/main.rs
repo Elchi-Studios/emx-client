@@ -1079,6 +1079,15 @@ fn api(emx: &Client, rest: &[&str], a: &Args) -> Result<(), Fail> {
             Some(d) => {
                 serde_json::from_str(d).map_err(|e| Fail::Local(format!("--data is not JSON: {e}")))?
             }
+            // A change needs to say what changes. Without it, `null`
+            // would be sent, and a call that merges it, as
+            // PATCH /api/me/prefs does, can store something no client
+            // reads.
+            None if method == "PATCH" || method == "PUT" => {
+                return Err(Fail::Usage(format!(
+                    "{method} needs --data JSON, the change to make; --data '{{}}' for none"
+                )))
+            }
             None => serde_json::Value::Null,
         };
         emx.call_json(&method, path, &body)?
@@ -1404,6 +1413,15 @@ mod tests {
         let a = args(&["api", "POST", "/api/me/prefs", "--data", "{screener: true}"]);
         let m = local_message(api(&offline(), &["POST", "/api/me/prefs"], &a));
         assert!(m.starts_with("--data is not JSON: "), "{m}");
+    }
+
+    #[test]
+    fn a_change_without_data_is_refused() {
+        for method in ["PATCH", "patch", "PUT"] {
+            let a = args(&["api", method, "/api/me/prefs"]);
+            let r = api(&offline(), &[method, "/api/me/prefs"], &a);
+            assert!(matches!(r, Err(Fail::Usage(ref m)) if m.contains("needs --data")));
+        }
     }
 
     #[test]

@@ -107,6 +107,21 @@ const ME_JSON: &str = r#"{"id":"u1","name":"Samuel Krauss","role":"owner","tenan
   "sendFrom":[{"address":"samuel@elchi.dev","name":"Samuel Krauss","mode":"own","primary":true}],
   "limits":{"maxMessageBytes":52428800,"dailyRecipients":1000},"prefs":{"screener":true},"newField":1}"#;
 
+/// Preferences that are not an object, as a mistaken call can store,
+/// must not stop `me` from working: it is how every program signs in.
+#[test]
+fn me_with_preferences_that_are_not_an_object() {
+    for prefs in [r#"[{"screener":true},null]"#, "null", "\"x\""] {
+        let me: emx_sdk::Me = serde_json::from_str(&format!(
+            r#"{{"id":"u1","tenant":{{"id":"t1"}},"prefs":{prefs}}}"#
+        ))
+        .unwrap();
+        assert!(me.prefs.is_empty(), "{prefs}");
+    }
+    let me: emx_sdk::Me = serde_json::from_str(r#"{"id":"u1","tenant":{"id":"t1"}}"#).unwrap();
+    assert!(me.prefs.is_empty());
+}
+
 #[test]
 fn me_and_mailboxes() {
     let (base, seen) = server(vec![

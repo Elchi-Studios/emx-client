@@ -32,8 +32,22 @@ pub struct Me {
     pub orgs: Vec<Org>,
     #[serde(default)]
     pub limits: Limits,
-    #[serde(default)]
+    /// The person's preferences. Anything but an object, which a client
+    /// could have stored by mistake, reads as none, so that it cannot
+    /// lock the person out of every program that asks who they are.
+    #[serde(default, deserialize_with = "object_or_empty")]
     pub prefs: BTreeMap<String, serde_json::Value>,
+}
+
+/// An object as a map, and anything else as an empty one.
+fn object_or_empty<'de, D>(d: D) -> Result<BTreeMap<String, serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Object(m) => m.into_iter().collect(),
+        _ => BTreeMap::new(),
+    })
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
