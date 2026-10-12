@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, size } from '$lib/state.svelte';
   import { emx } from '$lib/emx';
+  import { frame } from '$lib/mail';
 
   let { onreply }: { onreply: (all: boolean) => void } = $props();
   let showRemote = $state(false);
@@ -11,15 +12,30 @@
   // inline images pointing at the part endpoint. Those are fetched here
   // and put in as data URIs, because the frame has no token. Remote images
   // stay out until asked for.
+  //
+  // The frame is built again only when another message opens or its HTML
+  // changes. A flag or a read mark gives `app.open` a new object, and must
+  // neither reload the frame nor hide remote images let in.
+  const openId = $derived(app.open?.message.id ?? '');
+  const openHtml = $derived(app.open?.body.html ?? '');
+  // Counts builds: only the newest one is shown.
+  let builds = 0;
+
   $effect(() => {
-    const m = app.open;
+    const id = openId;
+    const source = openHtml;
     showRemote = false;
     html = '';
-    if (!m || !m.body.html) return;
-    build(m.message.id, m.body.html, false);
+    if (!id || !source) {
+      builds++;
+      building = false;
+      return;
+    }
+    build(id, source, false);
   });
 
   async function build(id: string, source: string, remote: boolean): Promise<void> {
+    const n = ++builds;
     building = true;
     let out = source;
     const parts = [...source.matchAll(/src="\/api\/accounts\/[^"]+\/messages\/[^"]+\/parts\/([^"]+)"/g)];
@@ -30,21 +46,18 @@
       } catch {
         // A part that will not load is left as it is.
       }
+      if (n !== builds) return;
     }
+    if (n !== builds) return;
     if (remote) out = out.replace(/data-src="/g, 'src="');
-    if (app.open?.message.id !== id) return;
-    html = `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>
-      body{margin:0;padding:4px 0;font:14px/1.5 -apple-system,system-ui,sans-serif;color:${remote ? '' : ''}CanvasText;background:transparent;word-wrap:break-word}
-      img{max-width:100%;height:auto} blockquote{border-left:3px solid #ccc;margin:8px 0;padding-left:10px;color:#666} pre{white-space:pre-wrap}
-      </style></head><body>${out}</body></html>`;
+    html = frame(out);
     building = false;
   }
 
   function loadRemote(): void {
-    const m = app.open;
-    if (!m) return;
+    if (!openId || !openHtml) return;
     showRemote = true;
-    build(m.message.id, m.body.html, true);
+    build(openId, openHtml, true);
   }
 
   async function save(part: string, filename: string): Promise<void> {

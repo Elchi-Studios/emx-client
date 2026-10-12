@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- The desktop app no longer rebuilds an open HTML message when it is
+  flagged or marked read: remote images let in stay, and the frame does
+  not flicker or fetch its inline images again.
+- Reply all in the desktop app leaves out exactly the person's own
+  addresses, every one they send from, compared whole and in any case.
+  It used to drop `lukas@x.ch` for the person `s@x.ch`, and to keep
+  their aliases. Each address is in a reply once, and a reply to one's
+  own message goes to its recipients.
+- When EMX refuses the token (expired or revoked), the desktop app
+  shows the sign-in form with the reason, instead of failing at every
+  click; the live updates say so too, rather than stopping without a
+  word. Listeners from an earlier sign-in are removed.
 - The desktop app deletes a message for good only when the message
   itself is in Trash or Junk. A search from Trash also finds messages in
   other folders, and Delete on one of those deleted it for good; it now

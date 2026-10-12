@@ -128,6 +128,13 @@ export function describe(e: unknown): string {
   return String(e);
 }
 
+/// Whether EMX no longer takes the sign-in: the token expired or was
+/// revoked. Only signing in again helps.
+export function refused(e: unknown): boolean {
+  const code = e && typeof e === 'object' ? (e as Failure).code : '';
+  return code === 'bad_token' || code === 'signed_out';
+}
+
 export function retryable(e: unknown): boolean {
   return !!(e && typeof e === 'object' && (e as Failure).retryable);
 }
@@ -187,5 +194,7 @@ export const emx = {
   setContact: (account: string, address: string, state: string) =>
     invoke<void>('set_contact', { account, address, contactState: state }),
   onChange: (fn: (n: { account: string; modseq: number }) => void): Promise<UnlistenFn> =>
-    listen<{ account: string; modseq: number }>('emx://change', (e) => fn(e.payload))
+    listen<{ account: string; modseq: number }>('emx://change', (e) => fn(e.payload)),
+  /// The app stopped following an account because EMX refused it.
+  onRefused: (fn: (f: Failure) => void): Promise<UnlistenFn> => listen<Failure>('emx://refused', (e) => fn(e.payload))
 };

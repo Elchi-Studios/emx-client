@@ -6,7 +6,8 @@
   let baseUrl = $state('');
   let advanced = $state(false);
   let busy = $state(false);
-  let error = $state('');
+  // Why the last sign-in ended, when EMX refused it.
+  let error = $state(app.signedOut);
 
   async function go(e: SubmitEvent): Promise<void> {
     e.preventDefault();

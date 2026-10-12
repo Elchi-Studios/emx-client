@@ -2,7 +2,7 @@
 // once per folder and then kept up to date from the change feed, the way
 // the web client does it.
 
-import { emx, describe, type Me, type Mailbox, type Message, type FullMessage } from './emx';
+import { emx, describe, refused, type Me, type Mailbox, type Message, type FullMessage } from './emx';
 import { appendPage, applyToFolder, applyToResults, deletesForGood, Latest, unique, withKeyword } from './list';
 
 export const roleOrder = ['inbox', 'drafts', 'sent', 'archive', 'junk', 'trash'];
@@ -27,7 +27,10 @@ class State {
   // A question waiting for an answer, such as "Delete for good?". While
   // one is open, the keys of the window and the composer do nothing.
   asking = $state<null | { text: string; confirm: string; answer: (ok: boolean) => void }>(null);
+  // Why the person was signed out, shown on the sign-in form.
+  signedOut = $state('');
   modseq: Record<string, number> = {};
+  private unlisten: (() => void)[] = [];
   private busy: Record<string, boolean> = {};
   // A notice that came while that account's changes were being fetched:
   // they are fetched once more when the fetch ends.
@@ -65,16 +68,53 @@ class State {
   }
 
   fail(e: unknown): void {
+    // An expired or revoked token: every further call fails the same
+    // way, so the window goes back to the sign-in form and says why.
+    if (refused(e) && this.me) {
+      void this.signOut(describe(e));
+      return;
+    }
     this.problem = describe(e);
     setTimeout(() => (this.problem = ''), 6000);
   }
 
   async start(me: Me): Promise<void> {
+    this.stopListening();
     this.me = me;
+    this.signedOut = '';
     const own = me.accounts.find((a) => a.rights.own);
     this.account = own?.id ?? 'me';
+    // Listening first: a change while the folders load is not missed.
+    this.unlisten.push(await emx.onChange((n) => this.onChange(n.account, n.modseq)));
+    this.unlisten.push(await emx.onRefused((f) => this.fail(f)));
     await this.loadMailboxes();
-    await emx.onChange((n) => this.onChange(n.account, n.modseq));
+  }
+
+  /// Forgets the sign-in here and shows the sign-in form, with `reason`
+  /// when the sign-in was refused.
+  async signOut(reason = ''): Promise<void> {
+    this.stopListening();
+    this.signedOut = reason;
+    this.me = null;
+    this.close();
+    this.view.next();
+    this.messages = [];
+    this.mailboxes = [];
+    this.mailbox = null;
+    this.cursor = '';
+    this.query = '';
+    this.composing = null;
+    this.asking?.answer(false);
+    this.modseq = {};
+    try {
+      await emx.signOut();
+    } catch {
+      // Signing out here cannot fail in a way the person can act on.
+    }
+  }
+
+  private stopListening(): void {
+    for (const off of this.unlisten.splice(0)) off();
   }
 
   async switchAccount(id: string): Promise<void> {

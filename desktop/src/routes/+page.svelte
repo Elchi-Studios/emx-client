@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { app } from '$lib/state.svelte';
-  import { emx, describe, retryable, outage } from '$lib/emx';
+  import { emx, describe, refused, retryable, outage } from '$lib/emx';
   import SignIn from '$lib/SignIn.svelte';
   import Shell from '$lib/Shell.svelte';
   import Offline from '$lib/Offline.svelte';
@@ -39,6 +39,10 @@
         title = outage(e);
         timer = setTimeout(resume, pause * 1000);
         pause = Math.min(pause * 2, 60);
+      } else if (refused(e)) {
+        // The kept token expired or was revoked: the sign-in form says so.
+        offline = '';
+        app.signedOut = describe(e);
       } else {
         offline = '';
         app.fail(e);

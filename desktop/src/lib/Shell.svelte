@@ -1,6 +1,6 @@
 <script lang="ts">
   import { app } from '$lib/state.svelte';
-  import { emx } from '$lib/emx';
+  import { replyRecipients } from '$lib/mail';
   import Sidebar from './Sidebar.svelte';
   import MessageList from './MessageList.svelte';
   import MessageView from './MessageView.svelte';
@@ -61,15 +61,25 @@
   function reply(all: boolean): void {
     const m = app.open;
     if (!m) return;
-    const me = app.accountName.toLowerCase();
-    const to = m.body.replyTo.length ? m.body.replyTo.map((a) => a.address) : [m.message.from.address];
-    const others = all ? [...m.message.to, ...m.message.cc].filter((a) => !a.toLowerCase().includes(me)) : [];
+    // Every address the person sends from is theirs: Reply all leaves
+    // them out, and a reply to their own message goes to its recipients.
+    const own = [app.accountName, ...(app.me?.sendFrom ?? []).map((s) => s.address)].filter(Boolean);
+    const recipients = replyRecipients(
+      {
+        from: m.message.from.address,
+        to: m.message.to,
+        cc: m.message.cc,
+        replyTo: m.body.replyTo.map((a) => a.address)
+      },
+      own,
+      all
+    );
     const quoted = (m.body.text || '')
       .split('\n')
       .map((l) => '> ' + l)
       .join('\n');
     app.composing = {
-      to: [...to, ...others].join(', '),
+      to: recipients.join(', '),
       subject: m.message.subject.match(/^re:/i) ? m.message.subject : 'Re: ' + m.message.subject,
       text: `\n\nOn ${new Date(m.message.receivedAt).toLocaleString()}, ${m.message.from.name || m.message.from.address} wrote:\n${quoted}`,
       inReplyTo: m.body.messageId,
@@ -78,10 +88,7 @@
   }
 
   async function signOut(): Promise<void> {
-    await emx.signOut();
-    app.me = null;
-    app.close();
-    app.messages = [];
+    await app.signOut();
   }
 </script>
 

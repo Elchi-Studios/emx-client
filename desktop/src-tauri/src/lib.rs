@@ -69,7 +69,7 @@ type Shared = Mutex<App>;
 /// An error the window can show. `retryable` says that the same call may
 /// work in a moment: the network or the service is away, which is not a
 /// reason to sign in again.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Clone)]
 struct Failure {
     code: String,
     message: String,
@@ -489,6 +489,11 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>)
                 Ok(s) => s,
                 Err(e) => {
                     if !e.is_retryable() {
+                        // Refused for good, as an expired token is: the
+                        // window hears of it, rather than going quiet.
+                        if !stop.load(Ordering::Relaxed) {
+                            let _ = app.emit("emx://refused", Failure::from(e));
+                        }
                         return;
                     }
                     std::thread::sleep(std::time::Duration::from_secs(pause));
