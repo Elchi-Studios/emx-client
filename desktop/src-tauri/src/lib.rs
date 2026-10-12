@@ -167,15 +167,40 @@ fn token_path(app: &AppHandle) -> Result<PathBuf, String> {
 fn save_token(app: &AppHandle, base_url: &str, token: &str) -> Result<(), String> {
     let p = token_path(app)?;
     let body = serde_json::json!({"baseUrl": base_url, "token": token});
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+    let data = serde_json::to_vec(&body).map_err(|e| e.to_string())?;
+    write_private(&p, &data).map_err(|e| format!("{}: {e}", p.display()))
+}
+
+/// Writes `data` to `path` so that the file is either the old one or the
+/// new one, never empty or half written, and readable by the person
+/// alone, whatever permissions an earlier file had: a file beside it is
+/// written and synced first, then put in its place.
+fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let result = (|| {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        f.write_all(data)?;
+        f.sync_all()?;
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    let f = opts.open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    serde_json::to_writer(f, &body).map_err(|e| e.to_string())
+    result
 }
 
 fn load_token(app: &AppHandle) -> Option<(String, String)> {
@@ -659,6 +684,29 @@ mod tests {
             }
         }
         assert!(commands >= 19, "found {commands} commands");
+    }
+
+    #[test]
+    fn the_token_file_is_replaced_whole_and_private() {
+        let dir = std::env::temp_dir().join(format!("emx-desktop-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("session.json");
+        fs::write(&p, "old").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        write_private(&p, b"new").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "new");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

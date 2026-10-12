@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The desktop app writes its kept sign-in whole, through a file beside
+  it, so a crash or a full disk can no longer leave it empty and sign
+  the person out; and it makes the file readable by the person alone
+  each time, also when an earlier one had wider permissions.
 - `emx` runs with `EMX_TOKEN` set and no home folder, as under a
   service manager or in a container; it used to refuse with "no home
   directory to keep the token in". `emx login` writes its file whole,
