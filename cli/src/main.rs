@@ -81,7 +81,9 @@ The screener
 
 Webhooks
   webhooks                   list them and the events there are
-  webhook add URL --events a,b [--description D]
+  webhook add URL --events E,E [--description D]
+                             E: message.received, delivery.failed,
+                             complaint.received, or all of them: --events all
   webhook delete|test|enable <id>
   webhook deliveries <id>
 
@@ -1062,13 +1064,33 @@ fn webhook(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> 
     let id = rest.get(1).copied();
     match what {
         "add" => {
-            let url = id.ok_or_else(|| usage("webhook add URL --events a,b"))?;
-            let events: Vec<&str> = a
+            const ADD: &str =
+                "webhook add URL --events message.received,delivery.failed,complaint.received|all";
+            let url = id.ok_or_else(|| usage(ADD))?;
+            let mut events: Vec<String> = a
                 .value("events")
                 .unwrap_or("")
                 .split(',')
+                .map(|e| e.trim().to_string())
                 .filter(|e| !e.is_empty())
                 .collect();
+            if events.is_empty() {
+                return Err(usage(ADD));
+            }
+            if events.iter().any(|e| e == "all") {
+                // The service's own list, which may know more than this
+                // program.
+                let (_, known) = emx.webhooks()?;
+                events = if known.is_empty() {
+                    emx_sdk::webhook::EVENTS.iter().map(|e| e.to_string()).collect()
+                } else {
+                    known
+                        .into_iter()
+                        .filter(|e| e != emx_sdk::webhook::PING)
+                        .collect()
+                };
+            }
+            let events: Vec<&str> = events.iter().map(String::as_str).collect();
             let made = emx.create_webhook(account, url, &events, a.value("description").unwrap_or(""))?;
             if json {
                 return out(&made);

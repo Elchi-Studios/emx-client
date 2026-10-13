@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Webhooks know `complaint.received`, the event for an abuse report
+  (RFC 5965) about a message the account sent: the SDK reads it, with
+  `message.received`, `delivery.failed` and `ping`, as
+  `WebhookEvent::payload`, and names the events in
+  `webhook::EVENTS`. `emx webhook add` asks for `--events`, lists the
+  three in its help, and takes `--events all` for every event the
+  service offers; without `--events` the service refused the hook. The
+  documentation says that `message.received` no longer fires for mail
+  filed in Trash, nor `delivery.failed` for forwards and out-of-office
+  replies.
 - `emx send` reports a send refused with `503 try_later` after its
   attempts as not sent, with status 4, instead of one that may have gone
   out; a limit says when the message can go ("can go in 29 minutes"),

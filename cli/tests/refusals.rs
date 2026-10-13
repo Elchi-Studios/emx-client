@@ -194,3 +194,40 @@ fn me_names_the_limits() {
         assert!(text.contains(want), "{want}: {text}");
     }
 }
+
+fn hooks(method: &str, _: &str, _: usize) -> Reply {
+    if method == "GET" {
+        Reply::json(
+            200,
+            r#"{"webhooks":[],"events":["message.received","delivery.failed","complaint.received"]}"#,
+        )
+    } else {
+        Reply::json(
+            200,
+            r#"{"webhook":{"id":"h1","url":"https://crm.example.ch/emx","events":["message.received","delivery.failed","complaint.received"]},"secret":"whsec_abc"}"#,
+        )
+    }
+}
+
+#[test]
+fn a_webhook_for_every_event() {
+    let (base, seen) = scripted(hooks);
+    let out = emx(&base)
+        .args(["webhook", "add", "https://crm.example.ch/emx", "--events", "all"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let seen = seen.lock().unwrap();
+    let body: serde_json::Value = serde_json::from_str(&seen[1].body).unwrap();
+    assert_eq!(
+        body["events"],
+        serde_json::json!(["message.received", "delivery.failed", "complaint.received"])
+    );
+    drop(seen);
+    let out = emx(&base)
+        .args(["webhook", "add", "https://crm.example.ch/emx"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2), "events are named");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("complaint.received"));
+}

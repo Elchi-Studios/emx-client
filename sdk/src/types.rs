@@ -554,9 +554,8 @@ pub struct NewWebhook {
     pub secret: String,
 }
 
-/// What a webhook receives. `data` depends on `kind`: for
-/// `message.received` it carries `message` with the envelope, for
-/// `delivery.failed` the recipient, status and reason.
+/// What a webhook receives. `data` depends on `kind`;
+/// [`WebhookEvent::payload`] reads it as the record of its kind.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebhookEvent {
@@ -569,6 +568,127 @@ pub struct WebhookEvent {
     pub account: EventAccount,
     #[serde(default)]
     pub data: serde_json::Value,
+}
+
+impl WebhookEvent {
+    /// `data` as the record of the event's kind. An event this crate does
+    /// not know yet, or data that is not what its kind describes, is
+    /// [`Payload::Other`]: a receiver answers it with a 2xx all the same,
+    /// or the service tries it again.
+    pub fn payload(&self) -> Payload {
+        fn read<T: serde::de::DeserializeOwned>(v: &serde_json::Value) -> Option<T> {
+            serde_json::from_value(v.clone()).ok()
+        }
+        let typed = match self.kind.as_str() {
+            crate::webhook::MESSAGE_RECEIVED => read(&self.data).map(Payload::MessageReceived),
+            crate::webhook::DELIVERY_FAILED => read(&self.data).map(Payload::DeliveryFailed),
+            crate::webhook::COMPLAINT_RECEIVED => read(&self.data).map(Payload::ComplaintReceived),
+            crate::webhook::PING => read(&self.data).map(Payload::Ping),
+            _ => None,
+        };
+        typed.unwrap_or(Payload::Other)
+    }
+}
+
+/// The data of a webhook event, by its kind.
+#[derive(Debug, Clone)]
+pub enum Payload {
+    /// `message.received`: a message was filed in the account, in the
+    /// inbox, Junk, the screener's folder, Archive or a folder a rule
+    /// chose. Not a Sent copy, a draft, a mail app's upload, an import,
+    /// nor mail filed in Trash.
+    MessageReceived(MessageReceived),
+    /// `delivery.failed`: a message the account sent could not be
+    /// delivered to one recipient. Not a forward or an out-of-office
+    /// reply the service sent for the account.
+    DeliveryFailed(DeliveryFailed),
+    /// `complaint.received`: an abuse report (RFC 5965) arrived in the
+    /// account, one event for each recipient it names.
+    ComplaintReceived(ComplaintReceived),
+    /// `ping`: Test was pressed.
+    Ping(Ping),
+    /// An event of a kind this crate does not know, or data it cannot
+    /// read; `WebhookEvent::data` has it as it came.
+    Other,
+}
+
+/// The data of `message.received`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageReceived {
+    #[serde(default)]
+    pub message: ReceivedMessage,
+}
+
+/// The envelope of a message a webhook tells of, never its text. A sealed
+/// message's `subject`, `from`, `to`, `cc` and `message_id` are empty.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReceivedMessage {
+    pub id: String,
+    pub thread_id: String,
+    pub mailbox_id: String,
+    pub subject: String,
+    pub from: Address,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    /// RFC 3339.
+    pub received_at: String,
+    pub size: i64,
+    pub has_attachments: bool,
+    pub message_id: String,
+    pub sealed: bool,
+}
+
+/// The data of `delivery.failed`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DeliveryFailed {
+    pub queue_message_id: String,
+    pub recipient: String,
+    /// The enhanced status code, such as `5.1.1`.
+    pub status: String,
+    pub reason: String,
+    pub remote_server: String,
+}
+
+/// The data of `complaint.received`: a recipient of a message the account
+/// sent complained about it to their mailbox provider, whose report
+/// arrived in the account.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ComplaintReceived {
+    /// Who complained: the report's `Original-Rcpt-To`, or the To of the
+    /// message it encloses; empty when the provider redacted both.
+    pub recipient: String,
+    /// `abuse`, `fraud`, `virus` or `other`.
+    pub feedback_type: String,
+    /// The Message-ID of the message complained about, when the report
+    /// gives it.
+    pub message_id: String,
+    /// The envelope sender of that message, when the report gives it.
+    pub mail_from: String,
+    /// The From address of the report, whose domain vouched for it.
+    pub reported_by: String,
+    /// The report as filed in the account, to read with the API.
+    pub report: ComplaintReport,
+}
+
+/// Where a complaint's report was filed.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ComplaintReport {
+    /// A message id, for [`crate::Client::message`].
+    pub id: String,
+    pub mailbox_id: String,
+}
+
+/// The data of `ping`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Ping {
+    pub message: String,
+    pub sent_at: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

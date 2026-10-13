@@ -16,6 +16,20 @@
 
 use crate::types::WebhookEvent;
 
+/// A message was filed in the account; see [`crate::Payload`].
+pub const MESSAGE_RECEIVED: &str = "message.received";
+/// A message the account sent could not be delivered to a recipient.
+pub const DELIVERY_FAILED: &str = "delivery.failed";
+/// An abuse report about a message the account sent arrived in it.
+pub const COMPLAINT_RECEIVED: &str = "complaint.received";
+/// What Test sends; not an event a hook is made for.
+pub const PING: &str = "ping";
+
+/// The events a hook can be made for, as this crate knows them. The
+/// service's own list, which may have more, comes with
+/// [`crate::Client::webhooks`].
+pub const EVENTS: &[&str] = &[MESSAGE_RECEIVED, DELIVERY_FAILED, COMPLAINT_RECEIVED];
+
 /// Why a request was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
@@ -322,6 +336,69 @@ mod tests {
             )),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
         );
+    }
+
+    #[test]
+    fn events_read_as_their_kind() {
+        let event = |kind: &str, data: &str| -> WebhookEvent {
+            serde_json::from_str(&format!(
+                r#"{{"id":"evt_1","type":"{kind}","createdAt":"2026-10-13T07:41:12Z","account":{{"id":"a"}},"data":{data}}}"#
+            ))
+            .unwrap()
+        };
+        let e = event(
+            COMPLAINT_RECEIVED,
+            r#"{"recipient":"leser@example.com","feedbackType":"abuse","messageId":"issue-42@elchi.dev",
+                "mailFrom":"newsletter@elchi.dev","reportedBy":"fbl@reports.example.net",
+                "report":{"id":"r1","mailboxId":"m1"},"newField":true}"#,
+        );
+        match e.payload() {
+            crate::Payload::ComplaintReceived(c) => {
+                assert_eq!(c.recipient, "leser@example.com");
+                assert_eq!(c.feedback_type, "abuse");
+                assert_eq!(c.message_id, "issue-42@elchi.dev");
+                assert_eq!(c.mail_from, "newsletter@elchi.dev");
+                assert_eq!(c.reported_by, "fbl@reports.example.net");
+                assert_eq!((c.report.id.as_str(), c.report.mailbox_id.as_str()), ("r1", "m1"));
+            }
+            other => panic!("{other:?}"),
+        }
+        // A report whose provider redacted the recipient, and gave no
+        // Message-ID.
+        let e = event(
+            COMPLAINT_RECEIVED,
+            r#"{"recipient":"","feedbackType":"abuse","reportedBy":"fbl@x.net","report":{"id":"r2","mailboxId":"m1"}}"#,
+        );
+        assert!(matches!(e.payload(), crate::Payload::ComplaintReceived(c) if c.message_id.is_empty()));
+        let e = event(
+            MESSAGE_RECEIVED,
+            r#"{"message":{"id":"x1","threadId":"t1","mailboxId":"m1","subject":"Offerte",
+                "from":{"address":"anna@beispiel-ag.ch","name":"Anna Beispiel"},"to":["samuel@elchi.dev"],"cc":[],
+                "receivedAt":"2026-10-13T07:41:12Z","size":48213,"hasAttachments":true,"messageId":"abc@beispiel-ag.ch","sealed":false}}"#,
+        );
+        assert!(
+            matches!(e.payload(), crate::Payload::MessageReceived(m) if m.message.from.address == "anna@beispiel-ag.ch")
+        );
+        let e = event(
+            DELIVERY_FAILED,
+            r#"{"queueMessageId":"q1","recipient":"leser@example.com","status":"5.1.1","reason":"no such user"}"#,
+        );
+        assert!(
+            matches!(e.payload(), crate::Payload::DeliveryFailed(d) if d.status == "5.1.1" && d.remote_server.is_empty())
+        );
+        let e = event(
+            PING,
+            r#"{"message":"Hello from EMX","sentAt":"2026-10-13T07:41:12Z"}"#,
+        );
+        assert!(matches!(e.payload(), crate::Payload::Ping(p) if p.message == "Hello from EMX"));
+        assert!(matches!(
+            event("thread.archived", "{}").payload(),
+            crate::Payload::Other
+        ));
+        assert!(matches!(
+            event(DELIVERY_FAILED, "[1]").payload(),
+            crate::Payload::Other
+        ));
     }
 
     #[test]

@@ -61,14 +61,25 @@ Webhooks, on the receiving side, with the secret from `create_webhook`,
 the request's `X-EMX-Signature` header and its body as received:
 
 ```rust,no_run
-use emx_sdk::webhook;
+use emx_sdk::{webhook, Payload};
 
 fn on_webhook(secret: &str, signature: &str, body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     let event = webhook::receive(secret, signature, body)?;
-    println!("{} {}", event.kind, event.id);
+    match event.payload() {
+        Payload::MessageReceived(m) => println!("new: {}", m.message.subject),
+        Payload::DeliveryFailed(d) => println!("{} bounced: {}", d.recipient, d.reason),
+        // A reader marked a newsletter as spam: take them off the list.
+        Payload::ComplaintReceived(c) => println!("complaint from {}", c.recipient),
+        Payload::Ping(_) | Payload::Other => {}
+    }
     Ok(())
 }
 ```
+
+`X-EMX-Delivery` is the same on every retry of an event, so a receiver
+can skip what it handled already. `message.received` does not fire for
+mail filed in Trash, and `delivery.failed` only for mail the account
+sent itself, not for its forwards or out-of-office replies.
 
 Every call is in the API reference at
 [docs.elchi.dev/emx-api](https://docs.elchi.dev/emx-api). The service
