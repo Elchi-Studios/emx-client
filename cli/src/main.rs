@@ -81,6 +81,10 @@ Send
   scheduled move <id> --at TIME
   snippets [list]            text the web client's composer inserts by name
 
+Calendar
+  calendar agenda [--days N] what comes in the next N days (default 7), in
+                             every calendar you see
+
 The screener
   contacts [--state approved|blocked]
   approve <address> [--name N]
@@ -251,6 +255,7 @@ fn spec(command: &str) -> Option<Spec> {
             "scheduled [list] | cancel <id> | move <id> --at TIME",
         ),
         "snippets" => s(NONE, NONE, 0, Some(1), "snippets [list]"),
+        "calendar" => s(&["days"], NONE, 1, Some(1), "calendar agenda [--days N]"),
         "contacts" => s(
             &["state"],
             NONE,
@@ -328,6 +333,7 @@ fn run(command: &str, a: &Args) -> Result<(), Fail> {
         "send" => send(&emx, account, a, json),
         "scheduled" => scheduled(&emx, account, &rest, a, json),
         "snippets" => snippets(&emx, account, &rest, json),
+        "calendar" => calendar(&emx, &rest, a, json),
         "contacts" => contacts(&emx, account, a, json),
         "approve" => contact(&emx, account, &rest, "approved", a, json),
         "block" => contact(&emx, account, &rest, "blocked", a, json),
@@ -1162,6 +1168,124 @@ fn snippets(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<()
         outln!("{:<width$}  {}", clean(s.name()), trim(first, 60));
     }
     Ok(())
+}
+
+// --- Calendar ------------------------------------------------------------
+
+fn calendar(emx: &Client, rest: &[&str], a: &Args, json: bool) -> Result<(), Fail> {
+    if rest != ["agenda"] {
+        return Err(usage("calendar agenda [--days N]"));
+    }
+    let days = a.number("days", 7).map_err(config_err)?;
+    if !(1..=400).contains(&days) {
+        return Err(Fail::Usage("--days is a number from 1 to 400".into()));
+    }
+    let now = time::now();
+    let (from, to) = (time::utc(now), time::utc(now + i64::from(days) * 86_400));
+    let list = emx.calendars()?;
+    let events = emx.occurrences(&from, &to, &[])?;
+    if json {
+        return out(&serde_json::json!({"from": from, "to": to, "events": events}));
+    }
+    if events.is_empty() {
+        outln!(
+            "nothing in the next {days} day{}",
+            if days == 1 { "" } else { "s" }
+        );
+        return Ok(());
+    }
+    // Times are shown as the event has them, in its zone; the zone is
+    // named when it is not the person's own calendar's.
+    let home = list
+        .calendars
+        .iter()
+        .find(|c| c.access.own && c.default)
+        .or(list.calendars.first())
+        .map(|c| c.time_zone.as_str())
+        .unwrap_or("");
+    let names: std::collections::HashMap<&str, &str> = list
+        .calendars
+        .iter()
+        .map(|c| (c.id.as_str(), c.name.as_str()))
+        .collect();
+    let several = list.calendars.len() > 1;
+    let mut day = String::new();
+    for e in &events {
+        let date = e.start_local.get(..10).unwrap_or(&e.start_local);
+        if date != day {
+            if !day.is_empty() {
+                outln!();
+            }
+            outln!("{} {date}", time::weekday(date));
+            day = date.to_string();
+        }
+        outln!(
+            "  {}",
+            agenda_line(
+                e,
+                home,
+                several
+                    .then(|| names.get(e.calendar_id.as_str()).copied())
+                    .flatten()
+            )
+        );
+    }
+    Ok(())
+}
+
+/// One event of the agenda: its time in its own zone, what, where, and
+/// what the person answered when they are invited.
+fn agenda_line(e: &emx_sdk::EventView, home: &str, calendar: Option<&str>) -> String {
+    let clock = |t: &str| t.get(11..16).unwrap_or("").to_string();
+    let mut when = if e.all_day {
+        // The end of an all-day event is the day after its last.
+        let last = time::parse_rfc3339(&e.end)
+            .ok()
+            .map(|t| time::utc(t - 86_400))
+            .unwrap_or_default();
+        let first = e.start.get(..10).unwrap_or("");
+        match last.get(..10) {
+            Some(l) if l > first => format!("all day until {l}"),
+            _ => "all day".to_string(),
+        }
+    } else {
+        let end_day = e.end_local.get(..10).unwrap_or("");
+        let end = if end_day != e.start_local.get(..10).unwrap_or("") {
+            format!("{end_day} {}", clock(&e.end_local))
+        } else {
+            clock(&e.end_local)
+        };
+        format!("{}-{end}", clock(&e.start_local))
+    };
+    if !e.all_day && !e.time_zone.is_empty() && e.time_zone != home {
+        when.push_str(&format!(" {}", e.time_zone));
+    }
+    let mut line = format!(
+        "{when:<11}  {}",
+        trim(
+            if e.summary.is_empty() {
+                "(no title)"
+            } else {
+                &e.summary
+            },
+            60
+        )
+    );
+    if !e.location.is_empty() {
+        line.push_str(&format!(", {}", trim(&e.location, 40)));
+    }
+    let note = match (e.status.as_str(), e.my_status.as_str()) {
+        ("CANCELLED", _) => " (cancelled)",
+        (_, "DECLINED") => " (declined)",
+        (_, "TENTATIVE") => " (maybe)",
+        (_, "NEEDS-ACTION") => " (not answered)",
+        _ => "",
+    };
+    line.push_str(note);
+    if let Some(c) = calendar {
+        line.push_str(&format!("  [{}]", clean(c)));
+    }
+    line
 }
 
 // --- The screener --------------------------------------------------------

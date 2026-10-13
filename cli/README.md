@@ -15,6 +15,7 @@ emx send --to anna@example.ch --subject "Re: Offerte" --text "Gerne." --attach O
 emx send --to anna@example.ch --subject "Offerte" --body-file offerte.txt --at 2026-10-14T07:00:00+02:00
 emx scheduled                     # what waits to go later; cancel <id> takes it back
 emx snippets
+emx calendar agenda --days 14     # what comes, in every calendar you see
 emx seen <ids...>; emx move <ids...> --to archive
 emx watch --exec 'notify-send "EMX" "Something changed"'
 emx --json list | jq '.messages[].subject'

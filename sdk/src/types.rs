@@ -966,3 +966,315 @@ pub struct Snippets {
     pub snippets: Vec<Snippet>,
     pub editable: bool,
 }
+
+// --- Calendars ---------------------------------------------------------------
+
+/// A calendar the person sees: their own, and those of the shared
+/// mailboxes they are a member of.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Calendar {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// `#rrggbb`.
+    pub color: String,
+    /// The zone times without one are read in, an IANA name.
+    pub time_zone: String,
+    pub order: i64,
+    /// `VEVENT` and the other kinds of entry it takes.
+    pub components: Vec<String>,
+    pub default: bool,
+    pub owner: CalendarOwner,
+    pub access: CalendarAccess,
+    /// Counts the calendar's changes.
+    pub sync_seq: i64,
+    /// Whether it has a secret feed address.
+    pub feed: bool,
+    /// The address calendar apps are given for it (CalDAV).
+    pub caldav: String,
+}
+
+/// Whose a calendar is: a person or a shared mailbox.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CalendarOwner {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub address: String,
+}
+
+/// What the person may do with a calendar: read its events, change them,
+/// change the calendar itself.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CalendarAccess {
+    pub own: bool,
+    pub read: bool,
+    pub write: bool,
+    pub manage: bool,
+}
+
+/// The person's calendars, their own first.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CalendarList {
+    pub calendars: Vec<Calendar>,
+    /// The person's mailbox is sealed, and has no calendars of its own.
+    pub sealed: bool,
+    /// The address calendar apps start from.
+    pub caldav: String,
+}
+
+/// An event, or one occurrence of a recurring one.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EventView {
+    /// The stored event, the same for every occurrence of a series.
+    pub id: String,
+    pub calendar_id: String,
+    pub uid: String,
+    /// The stored event's version: a change or a deletion that names it
+    /// is refused with `412 changed` when the event changed meanwhile.
+    pub etag: String,
+    /// Which occurrence of a series this is, to change or delete it alone.
+    pub recurrence_id: String,
+    pub recurring: bool,
+    /// The occurrence was changed on its own.
+    #[serde(rename = "override")]
+    pub overridden: bool,
+    pub summary: String,
+    /// In [`Client::event`](crate::Client::event) only.
+    pub description: String,
+    pub location: String,
+    /// `CONFIRMED`, `TENTATIVE` or `CANCELLED`.
+    pub status: String,
+    /// `TRANSPARENT` when the time does not show as busy.
+    pub transp: String,
+    pub all_day: bool,
+    /// RFC 3339, UTC; for an all-day event, midnight UTC of its first day
+    /// and of the day after its last.
+    pub start: String,
+    pub end: String,
+    /// The wall-clock times in `time_zone`, `2026-10-12T09:00:00`.
+    pub start_local: String,
+    pub end_local: String,
+    pub time_zone: String,
+    pub rrule: String,
+    pub organizer: Option<Attendee>,
+    /// In [`Client::event`](crate::Client::event) only.
+    pub attendees: Vec<Attendee>,
+    #[serde(rename = "attendeeCount")]
+    pub attendee_count: i64,
+    /// Minutes before the start.
+    pub reminders: Vec<i64>,
+    /// The calendar owner's answer when they are invited: `NEEDS-ACTION`,
+    /// `ACCEPTED`, `TENTATIVE` or `DECLINED`.
+    pub my_status: String,
+    /// The calendar's owner organises the event, or nobody does: only
+    /// then may its time and attendees be changed.
+    pub organized: bool,
+}
+
+/// Somebody an event names.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct Attendee {
+    pub email: String,
+    pub name: String,
+    /// `NEEDS-ACTION`, `ACCEPTED`, `TENTATIVE` or `DECLINED`.
+    pub partstat: String,
+    pub role: String,
+    pub rsvp: bool,
+}
+
+/// An event with its iCalendar text.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct EventDetail {
+    pub event: EventView,
+    pub ics: String,
+}
+
+/// An event as a person writes it: times as wall-clock readings in
+/// `time_zone`, `2026-11-03T14:00` (a date alone for an all-day event).
+/// A field left `None` is not changed by an update.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EventInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub all_day: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+    /// An IANA name, `Europe/Zurich`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
+    /// `FREQ=WEEKLY;COUNT=4`; empty ends the repetition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rrule: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transp: Option<String>,
+    /// Each is sent an invitation, an update or a cancellation by mail,
+    /// unless `notify` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attendees: Option<Vec<AttendeeInput>>,
+    /// Minutes before the start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reminders: Option<Vec<i64>>,
+}
+
+/// An attendee to invite.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AttendeeInput {
+    pub email: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+}
+
+/// Which occurrences of a recurring event a change or a deletion is for.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Scope {
+    /// Every occurrence; one dragged moves them all as far.
+    All,
+    /// The occurrence named by its `recurrence_id` alone.
+    This,
+    /// That occurrence and the ones after it: the series ends before it
+    /// and a new one starts there.
+    Following,
+}
+
+impl Scope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Scope::All => "all",
+            Scope::This => "this",
+            Scope::Following => "following",
+        }
+    }
+}
+
+/// A change of an event: which occurrences, on which version, and what.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventUpdate {
+    /// Refused with `412 changed` when the event is no longer at it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub etag: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Scope>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub recurrence_id: String,
+    pub event: EventInput,
+    /// Moves the whole event to another calendar the person may write.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub calendar_id: String,
+    /// False sends the attendees nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notify: Option<bool>,
+}
+
+/// What a change of an event came to: the event as it is now, and how
+/// many attendees were sent an invitation, an update or a cancellation.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EventChange {
+    pub event: EventView,
+    pub invited: i64,
+    /// Why the mail to the attendees could not go, when it could not.
+    pub notify_error: String,
+    pub deleted: bool,
+}
+
+/// An event in a calendar, by its calendar and id.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct EventRef {
+    pub calendar_id: String,
+    pub id: String,
+}
+
+/// An invitation a message carries, as the account sees it.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Invitation {
+    /// `REQUEST`, `REPLY`, `CANCEL` or `PUBLISH`.
+    pub method: String,
+    pub uid: String,
+    pub summary: String,
+    pub location: String,
+    pub description: String,
+    pub start: String,
+    pub end: String,
+    pub all_day: bool,
+    pub time_zone: String,
+    pub rrule: String,
+    /// For one occurrence of a series.
+    pub occurrence: bool,
+    pub organizer: Option<Attendee>,
+    pub attendees: Vec<Attendee>,
+    /// The address of the mailbox it is for.
+    pub me: String,
+    pub my_status: String,
+    /// `new`, `current` (the calendar has this version), `outdated`,
+    /// `cancelled`, or `reply` (an answer to an event the account
+    /// organises).
+    pub state: String,
+    pub event: Option<EventRef>,
+    /// The account's own events at the same time.
+    pub conflicts: Vec<Conflict>,
+    pub can_respond: bool,
+    /// Who answered, for a `REPLY`.
+    pub from: String,
+}
+
+/// An event at the same time as an invitation.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Conflict {
+    pub summary: String,
+    pub start: String,
+    pub end: String,
+    pub all_day: bool,
+}
+
+/// An answer to an invitation: the invitation as it is now, and the event
+/// in the calendar.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Answered {
+    pub invitation: Invitation,
+    pub event: EventRef,
+}
+
+/// The answer to an invitation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Response {
+    Accepted,
+    Tentative,
+    Declined,
+}
+
+impl Response {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Response::Accepted => "accepted",
+            Response::Tentative => "tentative",
+            Response::Declined => "declined",
+        }
+    }
+}

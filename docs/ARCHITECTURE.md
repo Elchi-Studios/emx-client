@@ -37,6 +37,10 @@ cli                                                             ──▶  emx-s
   A change of a draft made on an older version comes back as
   `OnVersion::Changed` with the newer draft rather than as an error, so
   that a client shows or merges it.
+- `calendar.rs` is the calendars: occurrences in a range with recurring
+  events expanded by the service, events made, changed and deleted for
+  one occurrence, the following ones or all, on their `etag`, and
+  invitations answered.
 - `types.rs` is the records, with serde. Every optional field defaults,
   and unknown fields are ignored, because the service adds fields and
   never removes one.

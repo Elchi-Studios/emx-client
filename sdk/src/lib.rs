@@ -33,6 +33,7 @@
 //!
 //! The reference for every call is at <https://docs.elchi.dev/emx-api>.
 
+mod calendar;
 mod client;
 mod drafts;
 mod error;

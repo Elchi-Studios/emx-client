@@ -130,3 +130,46 @@ fn snippets_by_name() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["snippets"][0]["body"]["name"], "thanks");
 }
+
+fn calendar(_: &str, path: &str, _: usize) -> Reply {
+    if path == "/api/calendars" {
+        return Reply::json(
+            200,
+            r##"{"calendars":[{"id":"c1","name":"Kalender","timeZone":"Europe/Zurich","default":true,"access":{"own":true,"read":true,"write":true}},
+                {"id":"c2","name":"Kontakt","timeZone":"Europe/Zurich","access":{"read":true}}]}"##,
+        );
+    }
+    assert!(path.starts_with("/api/calendars/occurrences?from="), "{path}");
+    Reply::json(
+        200,
+        r#"{"events":[
+          {"id":"e2","calendarId":"c2","summary":"Messe","allDay":true,"start":"2026-10-13T00:00:00Z","end":"2026-10-16T00:00:00Z","startLocal":"2026-10-13","endLocal":"2026-10-16","timeZone":"Europe/Zurich"},
+          {"id":"e1","calendarId":"c1","summary":"Standup","allDay":false,"start":"2026-10-12T07:00:00Z","end":"2026-10-12T07:15:00Z","startLocal":"2026-10-12T09:00:00","endLocal":"2026-10-12T09:15:00","timeZone":"Europe/Zurich","myStatus":"NEEDS-ACTION"},
+          {"id":"e3","calendarId":"c1","summary":"Call New York","location":"Zoom","allDay":false,"start":"2026-10-13T14:00:00Z","end":"2026-10-13T15:00:00Z","startLocal":"2026-10-13T10:00:00","endLocal":"2026-10-13T11:00:00","timeZone":"America/New_York"}
+        ]}"#,
+    )
+}
+
+#[test]
+fn the_agenda_by_day() {
+    let (base, seen) = scripted(calendar);
+    let out = emx(&base)
+        .args(["calendar", "agenda", "--days", "3"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let want = "Mon 2026-10-12\n  09:00-09:15  Standup (not answered)  [Kalender]\n\n\
+                Tue 2026-10-13\n  all day until 2026-10-15  Messe  [Kontakt]\n  \
+                10:00-11:00 America/New_York  Call New York, Zoom  [Kalender]\n";
+    assert_eq!(text, want);
+    let seen = seen.lock().unwrap();
+    assert!(seen[1].path.contains("&to="), "{}", seen[1].path);
+    let out = emx(&base)
+        .args(["calendar", "agenda", "--days", "0"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let out = emx(&base).args(["calendar", "list"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}

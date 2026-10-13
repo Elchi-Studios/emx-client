@@ -124,6 +124,20 @@ pub fn utc(t: i64) -> String {
     )
 }
 
+/// The day of the week of a date as `YYYY-MM-DD`, `Mon` to `Sun`; empty
+/// for anything else.
+pub fn weekday(date: &str) -> &'static str {
+    let num = |r: std::ops::Range<usize>| date.get(r).and_then(|p| p.parse::<i64>().ok());
+    let (Some(y), Some(m), Some(d)) = (num(0..4), num(5..7), num(8..10)) else {
+        return "";
+    };
+    if date.len() < 10 || !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
+        return "";
+    }
+    // 1970-01-01 was a Thursday.
+    ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"][days_from_civil(y, m, d).rem_euclid(7) as usize]
+}
+
 fn days_in_month(y: i64, m: i64) -> i64 {
     match m {
         4 | 6 | 9 | 11 => 30,
@@ -193,6 +207,16 @@ mod tests {
         ] {
             assert!(parse_rfc3339(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn days_of_the_week() {
+        assert_eq!(weekday("1970-01-01"), "Thu");
+        assert_eq!(weekday("2026-10-13"), "Tue");
+        assert_eq!(weekday("2026-10-12T09:00:00"), "Mon");
+        assert_eq!(weekday("2000-02-29"), "Tue");
+        assert_eq!(weekday("2026-02-30"), "");
+        assert_eq!(weekday("soon"), "");
     }
 
     #[test]

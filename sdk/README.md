@@ -54,6 +54,11 @@ the version a change was made on, and answer `OnVersion::Changed` with
 the newer draft when a colleague saved meanwhile, or `OnVersion::Sent`
 when somebody sent it, instead of overwriting their work.
 
+Calendars: `calendars`, `occurrences` for a range (recurring events
+expanded by the service), `event`, `create_event`, `update_event` and
+`delete_event` for one occurrence, the following ones or all, and
+`invitation` and `answer_invitation` for a message that carries one.
+
 Live updates: the stream says that something changed, and `changes`
 says what. A new stream starts by announcing the current modseq, so
 one that is not above the last handled needs no call.

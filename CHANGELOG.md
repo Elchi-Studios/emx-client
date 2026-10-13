@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- The SDK reaches the calendars: `calendars`, `occurrences` in a range
+  with recurring events expanded, `event`, `create_event`,
+  `update_event` and `delete_event` for one occurrence, the following
+  ones or all (`Scope`), refused with `412 changed` on an old `etag`,
+  `respond_event`, and `invitation` and `answer_invitation` for a
+  message that carries an invitation. `emx calendar agenda [--days N]`
+  lists what comes in the next days, by day, in every calendar the
+  person sees, with what they have not answered yet.
 - `emx send --at TIME` holds the message on EMX until that time, given
   with its zone or as a while from now (`+2h`, `+1d`), and EMX sends it
   then, whether the computer is on or not. `emx scheduled` lists what

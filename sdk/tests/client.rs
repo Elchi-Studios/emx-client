@@ -1390,3 +1390,187 @@ fn a_held_send_made_again_with_its_key_is_held_once() {
     assert_eq!(send["version"], 1, "on the version the first call saved");
     assert_eq!(seen[3].idempotency_key, "k-held");
 }
+
+const EVENT: &str = r#"{"id":"e1","calendarId":"c1","uid":"a1@elchi.dev","etag":"\"v1\"","recurrenceId":"20261012T070000Z","recurring":true,"summary":"Standup","allDay":false,"start":"2026-10-12T07:00:00Z","end":"2026-10-12T07:15:00Z","startLocal":"2026-10-12T09:00:00","endLocal":"2026-10-12T09:15:00","timeZone":"Europe/Zurich","rrule":"FREQ=WEEKLY;BYDAY=MO","organized":true,"myStatus":""}"#;
+
+#[test]
+fn calendars_and_events() {
+    let (base, seen) = server(vec![
+        (
+            200,
+            r##"{"calendars":[{"id":"c1","name":"Kalender","color":"#3b82f6","timeZone":"Europe/Zurich","default":true,"components":["VEVENT"],
+               "owner":{"id":"u1","name":"Samuel Krauss","kind":"user","address":"samuel@elchi.dev"},"access":{"own":true,"read":true,"write":true,"manage":true},
+               "syncSeq":12,"feed":false,"caldav":"https://mail.emxmail.app/dav/calendars/u1/kalender/"}],"sealed":false,"caldav":"https://mail.emxmail.app/dav/"}"##,
+        ),
+        (
+            200,
+            leak(format!(
+                r#"{{"events":[{},{EVENT}],"calendars":[{{"id":"c1","syncSeq":12}}]}}"#,
+                EVENT
+                    .replace("Standup", "Planning")
+                    .replace("2026-10-12T07:00:00Z", "2026-10-12T06:00:00Z")
+            )),
+        ),
+        (
+            200,
+            leak(format!(
+                r#"{{"event":{EVENT},"ics":"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"}}"#
+            )),
+        ),
+        (
+            200,
+            leak(format!(r#"{{"event":{EVENT},"invited":1,"notifyError":""}}"#)),
+        ),
+        (
+            412,
+            r#"{"error":{"code":"changed","message":"the event changed meanwhile; load it again"}}"#,
+        ),
+        (200, r#"{"deleted":true,"invited":0,"notifyError":""}"#),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let list = emx.calendars().unwrap();
+    assert!(list.calendars[0].access.write);
+    assert_eq!(list.calendars[0].owner.address, "samuel@elchi.dev");
+    let events = emx
+        .occurrences("2026-10-12T00:00:00Z", "2026-10-19T00:00:00Z", &["c1", "c2"])
+        .unwrap();
+    assert_eq!(events[0].summary, "Planning", "sorted by start");
+    assert_eq!(events[1].start_local, "2026-10-12T09:00:00");
+    let one = emx.event("c1", "e1", "20261012T070000Z").unwrap();
+    assert!(one.ics.starts_with("BEGIN:VCALENDAR"));
+    let made = emx
+        .create_event(
+            "c1",
+            &emx_sdk::EventInput {
+                summary: Some("Planning".into()),
+                start: Some("2026-11-03T14:00".into()),
+                end: Some("2026-11-03T15:00".into()),
+                time_zone: Some("Europe/Zurich".into()),
+                attendees: Some(vec![emx_sdk::AttendeeInput {
+                    email: "anna@elchi.dev".into(),
+                    ..Default::default()
+                }]),
+                reminders: Some(vec![15]),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(made.invited, 1);
+    let err = emx
+        .update_event(
+            "c1",
+            "e1",
+            &emx_sdk::EventUpdate {
+                etag: "\"v0\"".into(),
+                scope: Some(emx_sdk::Scope::This),
+                recurrence_id: "20261012T070000Z".into(),
+                event: emx_sdk::EventInput {
+                    location: Some("Bern".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), Some("changed"));
+    assert!(!err.is_retryable());
+    let gone = emx
+        .delete_event(
+            "c1",
+            "e1",
+            Some(emx_sdk::Scope::Following),
+            "20261019T070000Z",
+            "\"v1\"",
+            false,
+        )
+        .unwrap();
+    assert!(gone.deleted);
+    let seen = seen.lock().unwrap();
+    let calls: Vec<(&str, &str)> = seen
+        .iter()
+        .map(|s| (s.method.as_str(), s.path.as_str()))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("GET", "/api/calendars"),
+            (
+                "GET",
+                "/api/calendars/occurrences?from=2026-10-12T00%3A00%3A00Z&to=2026-10-19T00%3A00%3A00Z&calendars=c1%2Cc2"
+            ),
+            ("GET", "/api/calendars/c1/events/e1?recurrenceId=20261012T070000Z"),
+            ("POST", "/api/calendars/c1/events"),
+            ("PATCH", "/api/calendars/c1/events/e1"),
+            (
+                "DELETE",
+                "/api/calendars/c1/events/e1?scope=following&recurrenceId=20261019T070000Z&etag=%22v1%22&notify=false"
+            ),
+        ]
+    );
+    let made: serde_json::Value = serde_json::from_str(&seen[3].body).unwrap();
+    assert_eq!(
+        made,
+        serde_json::json!({"event": {"summary": "Planning", "start": "2026-11-03T14:00", "end": "2026-11-03T15:00",
+            "timeZone": "Europe/Zurich", "attendees": [{"email": "anna@elchi.dev"}], "reminders": [15]}, "notify": false})
+    );
+    let change: serde_json::Value = serde_json::from_str(&seen[4].body).unwrap();
+    assert_eq!(
+        change,
+        serde_json::json!({"etag": "\"v0\"", "scope": "this", "recurrenceId": "20261012T070000Z", "event": {"location": "Bern"}})
+    );
+}
+
+#[test]
+fn invitations_are_answered() {
+    let card = r#"{"method":"REQUEST","uid":"a1@beispiel-ag.ch","summary":"Offerte besprechen","start":"2026-10-20T08:00:00Z","end":"2026-10-20T09:00:00Z","allDay":false,
+      "organizer":{"email":"anna@beispiel-ag.ch","name":"Anna Beispiel"},"attendees":[{"email":"samuel@elchi.dev","partstat":"NEEDS-ACTION","rsvp":true}],
+      "me":"samuel@elchi.dev","myStatus":"NEEDS-ACTION","state":"new","conflicts":[{"summary":"Standup","start":"2026-10-20T08:30:00Z","end":"2026-10-20T08:45:00Z"}],"canRespond":true}"#;
+    let (base, seen) = server(vec![
+        (200, leak(format!(r#"{{"invitation":{card}}}"#))),
+        (
+            200,
+            leak(format!(
+                r#"{{"invitation":{},"event":{{"calendarId":"c1","id":"e9"}}}}"#,
+                card.replace(
+                    r#""myStatus":"NEEDS-ACTION","state":"new""#,
+                    r#""myStatus":"ACCEPTED","state":"current""#
+                )
+            )),
+        ),
+        (
+            404,
+            r#"{"error":{"code":"no_invitation","message":"the message carries no invitation"}}"#,
+        ),
+        (
+            200,
+            leak(format!(
+                r#"{{"invitation":{card},"event":{{"calendarId":"c1","id":"e9"}}}}"#
+            )),
+        ),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let inv = emx.invitation(ME, "x1").unwrap();
+    assert!(inv.can_respond);
+    assert_eq!(inv.organizer.unwrap().name, "Anna Beispiel");
+    assert_eq!(inv.conflicts[0].summary, "Standup");
+    let answered = emx
+        .answer_invitation(ME, "x1", emx_sdk::Response::Accepted, "", "")
+        .unwrap();
+    assert_eq!(answered.invitation.my_status, "ACCEPTED");
+    assert_eq!(answered.event.id, "e9");
+    assert_eq!(
+        emx.invitation(ME, "x2").unwrap_err().code(),
+        Some("no_invitation")
+    );
+    emx.respond_event("c1", "e9", emx_sdk::Response::Declined, "Leider nicht")
+        .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[1].path, "/api/accounts/me/messages/x1/invitation");
+    assert_eq!(seen[1].body, r#"{"response":"accepted"}"#);
+    assert_eq!(seen[3].path, "/api/calendars/c1/events/e9/respond");
+    assert_eq!(
+        seen[3].body,
+        r#"{"comment":"Leider nicht","response":"declined"}"#
+    );
+}
