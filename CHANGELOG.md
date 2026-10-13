@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `emx send` reports a send refused with `503 try_later` after its
+  attempts as not sent, with status 4, instead of one that may have gone
+  out; a limit says when the message can go ("can go in 29 minutes"),
+  `idempotency_mismatch` that a new message needs a new key, and an
+  answer EMX kept under the key that nothing went out again. `emx read
+  <id> --raw --out PATH` and `emx part --out PATH` save into a folder
+  under the name EMX gives the file, its subject for a message, beside
+  a file of that name rather than over it. `emx me` lists the limits a
+  send is held to.
 - The SDK makes a call refused with `503 try_later` again after the
   pause in `Retry-After`, up to 30 seconds (`Client::max_wait` sets
   another), where a repeat is harmless: reads, changes that leave the

@@ -48,9 +48,11 @@ Read
   mailboxes                  folders with counts
   list [--mailbox M] [--limit N] [--cursor C]
                              messages, newest first (M is a name or an id, default Inbox)
-  read <id> [--raw] [--html] a message; --raw prints it as received
-  part <id> --part P [--out FILE]
-                             an attachment, to a file or stdout
+  read <id> [--raw [--out PATH]] [--html]
+                             a message; --raw prints it as received, or saves
+                             it to PATH, a file or a folder (under its name)
+  part <id> --part P [--out PATH]
+                             an attachment, to a file, a folder or stdout
   thread <id>                a conversation, oldest first
   search <words...> [--mailbox M] [--limit N] [--cursor C]
                              every word must occur, prefixes match; all folders
@@ -184,13 +186,19 @@ fn spec(command: &str) -> Option<Spec> {
             Some(0),
             "list [--mailbox M] [--limit N] [--cursor C]",
         ),
-        "read" => s(NONE, &["raw", "html"], 1, Some(1), "read <id> [--raw] [--html]"),
+        "read" => s(
+            &["out"],
+            &["raw", "html"],
+            1,
+            Some(1),
+            "read <id> [--raw [--out PATH]] [--html]",
+        ),
         "part" => s(
             &["part", "out"],
             NONE,
             1,
             Some(1),
-            "part <id> --part P [--out FILE]",
+            "part <id> --part P [--out PATH]",
         ),
         "thread" => s(NONE, NONE, 1, Some(1), "thread <id>"),
         "search" => s(
@@ -379,12 +387,56 @@ fn describe(e: &Fail) -> String {
         Fail::Emx(Error::Api { code, message, .. }) if code == "reload" => {
             format!("{message}; run the command again")
         }
+        Fail::Emx(e @ Error::Api { code, .. }) if code == "idempotency_mismatch" => format!(
+            "{e}\nThis key went with another message. Every message needs a key of its own: \
+             leave --idempotency-key out, or give a new one."
+        ),
+        Fail::Emx(
+            e @ Error::Api {
+                code,
+                retry_after: Some(s),
+                ..
+            },
+        ) if matches!(code.as_str(), "hourly_limit" | "daily_limit" | "monthly_limit") => {
+            format!("{e}; the message was not sent, and can go in {}", duration(*s))
+        }
+        Fail::Emx(e) if e.is_try_later() => format!(
+            "{e}; nothing was done or sent, try again in {}",
+            duration(e.retry_after().unwrap_or(30))
+        ),
+        Fail::Emx(e) if e.is_replayed() => format!(
+            "{e}\nThis is the answer the first send with this key got; nothing was sent this time either."
+        ),
         Fail::Emx(
             e @ Error::Api {
                 retry_after: Some(s), ..
             },
-        ) if e.is_retryable() => format!("{e}; try again in {s} seconds"),
+        ) if e.is_retryable() => format!("{e}; try again in {}", duration(*s)),
         Fail::Emx(e) => e.to_string(),
+    }
+}
+
+/// A wait in seconds as a person reads it: seconds up to two minutes,
+/// then minutes, then hours and minutes.
+fn duration(secs: u64) -> String {
+    match secs {
+        1 => "1 second".into(),
+        0..=119 => format!("{secs} seconds"),
+        120..=5399 => format!("{} minutes", secs.div_ceil(60)),
+        _ => {
+            let (h, m) = (secs / 3600, (secs % 3600).div_ceil(60));
+            let hours = if h == 1 {
+                "1 hour".to_string()
+            } else {
+                format!("{h} hours")
+            };
+            match m {
+                0 => hours,
+                60 => format!("{} hours", h + 1),
+                1 => format!("{hours} 1 minute"),
+                m => format!("{hours} {m} minutes"),
+            }
+        }
     }
 }
 
@@ -486,7 +538,42 @@ fn me(emx: &Client, json: bool) -> Result<(), Fail> {
     }
     outln!("\nSend from");
     for s in &me.send_from {
-        outln!("  {}{}", s.address, if s.primary { " (primary)" } else { "" });
+        let list = match &s.list_mail {
+            Some(l) => format!(
+                " (list mail: {} an hour, {} a day)",
+                l.hourly_recipients, l.daily_recipients
+            ),
+            None => String::new(),
+        };
+        outln!(
+            "  {}{}{list}",
+            s.address,
+            if s.primary { " (primary)" } else { "" }
+        );
+    }
+    let l = &me.limits;
+    outln!("\nLimits");
+    if l.max_recipients > 0 {
+        outln!("  {} recipients a message (To, Cc and Bcc)", l.max_recipients);
+    }
+    if l.max_message_bytes > 0 {
+        outln!("  {} MB a message", l.max_message_bytes >> 20);
+    }
+    if l.hourly_recipients > 0 {
+        outln!(
+            "  {} recipients outside the organisation an hour",
+            l.hourly_recipients
+        );
+    }
+    if l.daily_recipients > 0 {
+        outln!("  {} recipients a day", l.daily_recipients);
+    }
+    if l.monthly_recipients > 0 {
+        outln!(
+            "  {} recipients a month for the organisation, {} used",
+            l.monthly_recipients,
+            l.monthly_used
+        );
     }
     Ok(())
 }
@@ -556,6 +643,20 @@ fn print_messages(list: &[Message]) {
 
 fn read(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Result<(), Fail> {
     let id = rest.first().ok_or_else(|| usage("read <id>"))?;
+    if let Some(out) = a.value("out") {
+        if !a.switch("raw") {
+            return Err(Fail::Usage(
+                "--out saves the message as received; give --raw with it".into(),
+            ));
+        }
+        let d = emx.raw_download(account, id)?;
+        let path = save_download(out, &d, "message.eml")?;
+        if json {
+            return out_json_saved(&path, &d);
+        }
+        eprintln!("{} bytes written to {}", d.data.len(), path.display());
+        return Ok(());
+    }
     if a.switch("raw") {
         let raw = emx.raw(account, id)?;
         // As received for a file or a pipe; on a terminal, without what
@@ -610,11 +711,12 @@ fn part(emx: &Client, account: &str, rest: &[&str], a: &Args) -> Result<(), Fail
     let p = a
         .value("part")
         .ok_or_else(|| usage("part <id> --part P [--out FILE]"))?;
-    let (data, kind) = emx.part(account, id, p)?;
+    let d = emx.part_download(account, id, p)?;
+    let (data, kind) = (&d.data, d.content_type.as_str());
     match a.value("out") {
-        Some(path) => {
-            std::fs::write(path, &data).map_err(|e| file_err(path, e))?;
-            eprintln!("{} bytes of {kind} written to {path}", data.len());
+        Some(out) => {
+            let path = save_download(out, &d, "attachment")?;
+            eprintln!("{} bytes of {kind} written to {}", data.len(), path.display());
         }
         // A terminal shows text only; a PDF or an image would fill it
         // with noise, and with sequences the terminal takes as commands.
@@ -624,11 +726,70 @@ fn part(emx: &Client, account: &str, rest: &[&str], a: &Args) -> Result<(), Fail
                     "the part is {kind}; save it with --out FILE, or send the output to a file or program"
                 )));
             }
-            outp!("{}", clean(&String::from_utf8_lossy(&data)));
+            outp!("{}", clean(&String::from_utf8_lossy(data)));
         }
-        None => emit_bytes(&data),
+        None => emit_bytes(data),
     }
     Ok(())
+}
+
+/// Writes a download to `out`: into that folder under the name EMX gives
+/// it, made safe for the file system, beside any file of that name
+/// rather than over it; or to that file, which it replaces.
+fn save_download(out: &str, d: &emx_sdk::Download, fallback: &str) -> Result<std::path::PathBuf, Fail> {
+    let target = std::path::Path::new(out);
+    let path = if target.is_dir() || out.ends_with(std::path::MAIN_SEPARATOR) || out.ends_with('/') {
+        std::fs::create_dir_all(target).map_err(|e| file_err(out, e))?;
+        return save_new(target, &d.file_name(fallback), &d.data);
+    } else {
+        target.to_path_buf()
+    };
+    std::fs::write(&path, &d.data).map_err(|e| file_err(out, e))?;
+    Ok(path)
+}
+
+/// Writes `data` to `name` in `dir`, or to `name (2)` and so on when
+/// that is taken, and answers the path. A name is taken by creating its
+/// file, so that two runs at once never write to the same one.
+fn save_new(dir: &std::path::Path, name: &str, data: &[u8]) -> Result<std::path::PathBuf, Fail> {
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (name.to_string(), String::new()),
+    };
+    for n in 1..10_000 {
+        let path = if n == 1 {
+            dir.join(name)
+        } else {
+            dir.join(format!("{stem} ({n}){ext}"))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut f) => {
+                let shown = path.display().to_string();
+                f.write_all(data).map_err(|e| file_err(&shown, e))?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(file_err(&path.display().to_string(), e)),
+        }
+    }
+    Err(Fail::Local(format!(
+        "{}: every name for {name} is taken",
+        dir.display()
+    )))
+}
+
+/// What a saved download answers with `--json`.
+fn out_json_saved(path: &std::path::Path, d: &emx_sdk::Download) -> Result<(), Fail> {
+    out(&serde_json::json!({
+        "path": path.display().to_string(),
+        "bytes": d.data.len(),
+        "filename": d.filename,
+        "contentType": d.content_type,
+    }))
 }
 
 fn thread(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), Fail> {
@@ -799,10 +960,10 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
     };
     let sent = match emx.send_mail_with_key(&draft, &key) {
         Ok(sent) => sent,
-        // A refusal with a status below 500, the rate limit among them,
-        // came before anything was sent; after any other failure nobody
-        // knows.
-        Err(e @ (Error::Transport(_) | Error::Api { status: 500.., .. })) => {
+        // A refusal below 500, the limits among them, and a passing
+        // fault EMX names (try_later) came before anything was sent;
+        // after any other failure nobody knows.
+        Err(e) if !e.changed_nothing() => {
             return Err(Fail::Uncertain(format!(
                 "{}\nThe message may have been sent. To send it again without a second copy, \
                  repeat the command with --idempotency-key {key}",
@@ -814,11 +975,16 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
     if json {
         return out(&sent);
     }
-    outln!(
-        "sent to {} recipient{}",
+    let recipients = format!(
+        "{} recipient{}",
         sent.recipients,
         if sent.recipients == 1 { "" } else { "s" }
     );
+    if sent.replayed {
+        outln!("sent to {recipients} already, with this key; not sent again");
+    } else {
+        outln!("sent to {recipients}");
+    }
     Ok(())
 }
 
@@ -1610,6 +1776,21 @@ mod tests {
         assert_eq!(retry_wait(&limited, 1), 20);
         assert_eq!(retry_wait(&limited, 60), 60);
         assert_eq!(retry_wait(&Error::Transport("gone".into()), 4), 4);
+    }
+
+    #[test]
+    fn waits_read_as_a_person_says_them() {
+        assert_eq!(duration(1), "1 second");
+        assert_eq!(duration(45), "45 seconds");
+        assert_eq!(duration(119), "119 seconds");
+        assert_eq!(duration(120), "2 minutes");
+        assert_eq!(duration(1741), "30 minutes");
+        assert_eq!(duration(3600), "60 minutes");
+        assert_eq!(duration(5400), "1 hour 30 minutes");
+        assert_eq!(duration(7200), "2 hours");
+        assert_eq!(duration(7201), "2 hours 1 minute");
+        assert_eq!(duration(10_799), "3 hours");
+        assert_eq!(duration(86_400), "24 hours");
     }
 
     #[test]

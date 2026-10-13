@@ -9,6 +9,7 @@ emx login                       # paste a token; or set EMX_TOKEN
 emx mailboxes
 emx list --mailbox inbox --limit 20
 emx read <id>
+emx read <id> --raw --out ~/Mail  # saved as "<subject>.eml", the name EMX gives it
 emx search offerte 2026
 emx send --to anna@example.ch --subject "Re: Offerte" --text "Gerne." --attach Offerte.pdf
 emx seen <ids...>; emx move <ids...> --to archive
@@ -25,7 +26,10 @@ win over it, which is what a server uses.
 or a file here could not be read, 2 for a command line it does not
 understand, 3 without a token or with one EMX refused, 4 when the
 network or EMX is away for a moment (the same command may work soon),
-and 5 when a send may or may not have gone out. With `--json`, every
+and 5 when a send may or may not have gone out. A send EMX refused for
+a passing fault on its side (`try_later`) is tried again with the same
+idempotency key and, when that does not help, ends with 4: nothing went
+out. A limit says when the message can go. With `--json`, every
 command answers JSON.
 
 `emx` trusts the Mozilla root certificates it is built with. Behind a
