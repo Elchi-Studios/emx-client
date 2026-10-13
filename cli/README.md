@@ -12,6 +12,9 @@ emx read <id>
 emx read <id> --raw --out ~/Mail  # saved as "<subject>.eml", the name EMX gives it
 emx search offerte 2026
 emx send --to anna@example.ch --subject "Re: Offerte" --text "Gerne." --attach Offerte.pdf
+emx send --to anna@example.ch --subject "Offerte" --body-file offerte.txt --at 2026-10-14T07:00:00+02:00
+emx scheduled                     # what waits to go later; cancel <id> takes it back
+emx snippets
 emx seen <ids...>; emx move <ids...> --to archive
 emx watch --exec 'notify-send "EMX" "Something changed"'
 emx --json list | jq '.messages[].subject'
@@ -46,6 +49,15 @@ any device, this one included: new mail, but also mail read, flagged,
 moved or deleted. It reconnects on its own, without a word, and picks
 up where it was; a batch with nothing in it is never printed or passed
 on.
+
+`emx send --at` holds the message on EMX until the time given, with
+its zone (`Z` or an offset such as `+02:00`), or a while from now
+(`+30m`, `+2h`, `+1d`), within a year; EMX sends it then whether this
+computer is on or not. It is kept as a draft of the account it is
+written from, a shared mailbox's when `--from` is one, and listed
+under Scheduled in the web client as with `emx scheduled`. Run again
+with the same `--idempotency-key`, it finds the message held by the
+first run instead of holding a second.
 
 `emx api` reaches any call under `/api/`, for the administration calls
 and whatever the service adds next.

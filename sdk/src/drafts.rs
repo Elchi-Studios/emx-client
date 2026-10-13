@@ -118,10 +118,14 @@ impl Client {
         })
     }
 
-    /// Saves `message` as a new draft of `account` and sends it held as
+    /// Saves `message` as a draft of `account` and sends it held as
     /// `hold` says: the way to send later, or with time to take it back,
-    /// in one call. The draft's id is new; the answer's `outbox` names
-    /// the held message. `key` is the send's `Idempotency-Key`.
+    /// in one call. The answer's `outbox` names the held message.
+    ///
+    /// `key` is the send's `Idempotency-Key`, and names the draft as well:
+    /// the same call with the same key, after an answer that was lost,
+    /// finds the draft of the first call and its answer instead of
+    /// holding the message twice.
     pub fn send_held(
         &self,
         account: &str,
@@ -130,28 +134,46 @@ impl Client {
         key: &str,
     ) -> Result<DraftSent, Error> {
         check_key(key)?;
-        let id = new_draft_id();
+        let id = self.draft_id_for(key);
         let saved = match self.save_draft(account, &id, 0, &message.draft_body())? {
             OnVersion::Done(d) => d,
-            // A new id is nobody's draft yet; one that is would be sent
-            // with somebody else's text.
-            OnVersion::Changed(_) | OnVersion::Sent(_) => {
-                return Err(Error::Decode(format!("a draft {id} exists already")))
-            }
+            // Saved by an earlier call with this key: sent on the version
+            // it was saved as, which the service answers with what that
+            // call got, or sends now if it never got that far.
+            OnVersion::Changed(d) | OnVersion::Sent(d) => d,
         };
         let account = if saved.account.is_empty() {
             account.to_string()
         } else {
             saved.account.clone()
         };
-        match self.send_draft(&account, &saved.id, saved.version, message, hold, key)? {
+        let id = if saved.id.is_empty() { id } else { saved.id.clone() };
+        match self.send_draft(&account, &id, saved.version, message, hold, key)? {
             OnVersion::Done(sent) => Ok(sent),
-            // A draft made a moment ago under a new id: nobody else can
-            // have changed or sent it.
-            OnVersion::Changed(_) | OnVersion::Sent(_) => {
-                Err(Error::Decode("the new draft changed while it was sent".into()))
-            }
+            OnVersion::Changed(d) | OnVersion::Sent(d) => Err(Error::Api {
+                status: 409,
+                code: "sent".into(),
+                message: format!(
+                    "the draft of this key was sent or changed already{}; use a new key for a new message",
+                    d.sent_by.map(|p| format!(" by {}", p.name)).unwrap_or_default()
+                ),
+                request_id: None,
+                retry_after: None,
+                replayed: false,
+            }),
         }
+    }
+
+    /// The draft id [`send_held`](Client::send_held) uses for a key: a
+    /// UUID made from the key and the token, so that it is the same for
+    /// the same person and key and nobody else's.
+    fn draft_id_for(&self, key: &str) -> String {
+        let mut h = crate::webhook::Sha256::new();
+        h.update(b"emx-sdk held draft\0");
+        h.update(self.token().as_bytes());
+        h.update(b"\0");
+        h.update(key.as_bytes());
+        uuid_from(h.finish())
     }
 
     // --- Held messages --------------------------------------------------------
@@ -277,14 +299,21 @@ pub fn new_draft_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut b = [0u8; 16];
-    for (i, half) in b.chunks_mut(8).enumerate() {
+    let mut b = [0u8; 32];
+    for (i, half) in b.chunks_mut(8).take(2).enumerate() {
         let v = RandomState::new().hash_one((i, n, nanos, std::process::id()));
         half.copy_from_slice(&v.to_le_bytes());
     }
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    uuid_from(b)
+}
+
+/// A UUID of version 4 from the first 16 bytes of `b`.
+fn uuid_from(b: [u8; 32]) -> String {
+    let mut u = [0u8; 16];
+    u.copy_from_slice(&b[..16]);
+    u[6] = (u[6] & 0x0f) | 0x40;
+    u[8] = (u[8] & 0x3f) | 0x80;
+    let h: String = u.iter().map(|x| format!("{x:02x}")).collect();
     format!(
         "{}-{}-{}-{}-{}",
         &h[..8],

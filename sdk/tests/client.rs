@@ -1338,3 +1338,55 @@ fn an_outcome_on_a_version_serializes_with_its_kind() {
     let done = serde_json::to_value(emx_sdk::OnVersion::Done(1)).unwrap();
     assert_eq!(done, serde_json::json!({"outcome": "done", "value": 1}));
 }
+
+/// The same held send made again with its key after a lost answer finds
+/// the draft of the first and gets the first answer, instead of holding
+/// the message twice.
+#[test]
+fn a_held_send_made_again_with_its_key_is_held_once() {
+    let sent_draft = leak(format!(
+        r#"{{"error":{{"code":"sent","message":"the draft was sent already"}},"draft":{}}}"#,
+        SAVED.replace(r#""version":4"#, r#""version":1,"sentAt":"2026-10-13T07:06:00Z""#)
+    ));
+    let (base, seen) = server_with(vec![
+        (
+            200,
+            leak(format!(
+                r#"{{"draft":{}}}"#,
+                SAVED.replace(r#""version":4"#, r#""version":1"#)
+            )),
+            "",
+        ),
+        (202, leak(format!(r#"{{"held":true,"outbox":{HELD}}}"#)), ""),
+        (409, sent_draft, ""),
+        (
+            202,
+            leak(format!(r#"{{"held":true,"outbox":{HELD}}}"#)),
+            "Idempotent-Replayed: true\r\n",
+        ),
+        (
+            200,
+            leak(format!(
+                r#"{{"draft":{}}}"#,
+                SAVED.replace(r#""version":4"#, r#""version":1"#)
+            )),
+            "",
+        ),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let hold = emx_sdk::Hold {
+        send_at: Some("2026-10-14T07:00:00Z".into()),
+        ..Default::default()
+    };
+    assert!(!emx.send_held(ME, &draft(), &hold, "k-held").unwrap().replayed);
+    let again = emx.send_held(ME, &draft(), &hold, "k-held").unwrap();
+    assert!(again.replayed && again.held);
+    // Another key names another draft.
+    let _ = emx.send_held(ME, &draft(), &hold, "k-other");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].path, seen[2].path, "the same draft for the same key");
+    assert_ne!(seen[0].path, seen[4].path);
+    let send: serde_json::Value = serde_json::from_str(&seen[3].body).unwrap();
+    assert_eq!(send["version"], 1, "on the version the first call saved");
+    assert_eq!(seen[3].idempotency_key, "k-held");
+}

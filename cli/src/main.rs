@@ -11,6 +11,7 @@
 mod args;
 mod config;
 mod hidden;
+mod time;
 
 /// `println!` for standard output, through [`emit`].
 macro_rules! outln {
@@ -69,9 +70,16 @@ Send
   send --to A [--cc A] [--bcc A] --subject S [--from A]
        [--text T | --body-file F | stdin] [--html H]
        [--attach FILE]... [--in-reply-to MSGID] [--idempotency-key K]
+       [--at TIME]
                              --to, --cc and --bcc repeat, or take a list: a, b;
                              a send again with the same K within a day goes
-                             out once at most (default: a new K each time)
+                             out once at most (default: a new K each time);
+                             --at holds it on EMX until TIME, as
+                             2026-10-14T07:00:00+02:00 or +2h, +1d
+  scheduled [list]           messages held to go later, and failed ones
+  scheduled cancel <id>      take one back; it is a draft again
+  scheduled move <id> --at TIME
+  snippets [list]            text the web client's composer inserts by name
 
 The screener
   contacts [--state approved|blocked]
@@ -228,12 +236,21 @@ fn spec(command: &str) -> Option<Spec> {
                 "reply-to",
                 "in-reply-to",
                 "idempotency-key",
+                "at",
             ],
             NONE,
             0,
             Some(0),
-            "send --to A --subject S [--text T]",
+            "send --to A --subject S [--text T] [--at TIME]",
         ),
+        "scheduled" => s(
+            &["at"],
+            NONE,
+            0,
+            Some(2),
+            "scheduled [list] | cancel <id> | move <id> --at TIME",
+        ),
+        "snippets" => s(NONE, NONE, 0, Some(1), "snippets [list]"),
         "contacts" => s(
             &["state"],
             NONE,
@@ -308,7 +325,9 @@ fn run(command: &str, a: &Args) -> Result<(), Fail> {
         "move" => mv(&emx, account, &rest, a, json),
         "delete" => delete(&emx, account, &rest, json),
         "snooze" => snooze(&emx, account, &rest, a, json),
-        "send" => send(&emx, a, json),
+        "send" => send(&emx, account, a, json),
+        "scheduled" => scheduled(&emx, account, &rest, a, json),
+        "snippets" => snippets(&emx, account, &rest, json),
         "contacts" => contacts(&emx, account, a, json),
         "approve" => contact(&emx, account, &rest, "approved", a, json),
         "block" => contact(&emx, account, &rest, "blocked", a, json),
@@ -895,12 +914,18 @@ fn done(changed: &[String], json: bool) -> Result<(), Fail> {
 
 // --- Send ----------------------------------------------------------------
 
-fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
+fn send(emx: &Client, account: &str, a: &Args, json: bool) -> Result<(), Fail> {
     // Recipients collect over repeated flags, as attachments do.
     let to = a.addresses("to");
     if to.is_empty() {
         return Err(usage("send --to A --subject S [--text T]"));
     }
+    // Checked before anything is read or asked: a wrong time must not
+    // cost the message typed on standard input.
+    let at = match a.value("at") {
+        Some(t) => Some(time::parse_at(t, time::now()).map_err(Fail::Usage)?),
+        None => None,
+    };
     let from = match a.value("from") {
         Some(f) => f.to_string(),
         None => default_from(&emx.me()?)
@@ -960,6 +985,40 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
         Some(k) => k.to_string(),
         None => emx_sdk::idempotency_key(),
     };
+    if let Some((at, _)) = at {
+        let hold = emx_sdk::Hold {
+            send_at: Some(at),
+            ..Default::default()
+        };
+        let sent = match emx.send_held(account, &draft, &hold, &key) {
+            Ok(sent) => sent,
+            Err(e) if !e.changed_nothing() => {
+                return Err(Fail::Uncertain(format!(
+                    "{}\nThe message may be held already. To hold it again without a second copy, \
+                     repeat the command with --idempotency-key {key}",
+                    describe(&Fail::Emx(e))
+                )))
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if json {
+            return out(&sent);
+        }
+        match &sent.outbox {
+            Some(h) => outln!(
+                "held until {}{}; emx scheduled cancel {} takes it back",
+                when(&h.send_at),
+                if sent.replayed {
+                    ", with this key already"
+                } else {
+                    ""
+                },
+                h.id
+            ),
+            None => outln!("sent to {} recipients", sent.recipients),
+        }
+        return Ok(());
+    }
     let sent = match emx.send_mail_with_key(&draft, &key) {
         Ok(sent) => sent,
         // A refusal below 500, the limits among them, and a passing
@@ -986,6 +1045,121 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
         outln!("sent to {recipients} already, with this key; not sent again");
     } else {
         outln!("sent to {recipients}");
+    }
+    Ok(())
+}
+
+// --- Held messages and snippets ---------------------------------------------
+
+fn scheduled(emx: &Client, account: &str, rest: &[&str], a: &Args, json: bool) -> Result<(), Fail> {
+    match rest {
+        [] | ["list"] => {
+            if a.value("at").is_some() {
+                return Err(usage("scheduled move <id> --at TIME"));
+            }
+            let list = emx.outbox(account)?;
+            if json {
+                return out(&serde_json::json!({"outbox": list}));
+            }
+            if list.is_empty() {
+                outln!("nothing scheduled");
+                return Ok(());
+            }
+            for h in &list {
+                let f = h.message.as_ref().map(|d| d.fields()).unwrap_or_default();
+                let what = if f.sealed {
+                    "(sealed)".to_string()
+                } else {
+                    format!(
+                        "{}  {}",
+                        trim(&f.to, 30),
+                        trim(
+                            if f.subject.is_empty() {
+                                "(no subject)"
+                            } else {
+                                &f.subject
+                            },
+                            50
+                        )
+                    )
+                };
+                let state = if h.state == "failed" {
+                    format!(
+                        "failed: {}",
+                        clean(if h.error_message.is_empty() {
+                            &h.error_code
+                        } else {
+                            &h.error_message
+                        })
+                    )
+                } else if h.kind == "undo" {
+                    "about to go".to_string()
+                } else {
+                    "held".to_string()
+                };
+                outln!("{}  {}  {what}", when(&h.send_at), state);
+                outln!("    {}", h.id);
+            }
+            Ok(())
+        }
+        ["cancel", id] => {
+            let back = emx.cancel_held(account, id)?;
+            if json {
+                return out(&back);
+            }
+            let files = back.attachments.len();
+            outln!(
+                "taken back; it is a draft again{}",
+                match files {
+                    0 => String::new(),
+                    1 => ", without its file, which a draft does not keep (--json gives it)".into(),
+                    n => format!(", without its {n} files, which a draft does not keep (--json gives them)"),
+                }
+            );
+            Ok(())
+        }
+        ["move", id] => {
+            let t = a
+                .value("at")
+                .ok_or_else(|| usage("scheduled move <id> --at TIME"))?;
+            let (at, _) = time::parse_at(t, time::now()).map_err(Fail::Usage)?;
+            let h = emx.reschedule_held(account, id, &at)?;
+            if json {
+                return out(&h);
+            }
+            outln!("held until {}", when(&h.send_at));
+            Ok(())
+        }
+        _ => Err(usage("scheduled [list] | cancel <id> | move <id> --at TIME")),
+    }
+}
+
+fn snippets(emx: &Client, account: &str, rest: &[&str], json: bool) -> Result<(), Fail> {
+    if !matches!(rest, [] | ["list"]) {
+        return Err(usage("snippets [list]"));
+    }
+    let list = emx.snippets(account)?;
+    if json {
+        return out(&list);
+    }
+    if list.snippets.is_empty() {
+        outln!("no snippets; they are made in the web client, under Settings");
+        return Ok(());
+    }
+    let width = list
+        .snippets
+        .iter()
+        .map(|s| s.name().chars().count())
+        .max()
+        .unwrap_or(4)
+        .clamp(4, 40);
+    for s in &list.snippets {
+        if s.is_sealed() {
+            outln!("{:<width$}  (sealed: opens in the web client)", "?");
+            continue;
+        }
+        let first = s.text().lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        outln!("{:<width$}  {}", clean(s.name()), trim(first, 60));
     }
     Ok(())
 }
@@ -1646,7 +1820,7 @@ mod tests {
             "--attach",
             "/nonexistent/Offerte.pdf",
         ]);
-        let m = local_message(send(&offline(), &a, false));
+        let m = local_message(send(&offline(), ME, &a, false));
         assert!(m.starts_with("/nonexistent/Offerte.pdf: "), "{m}");
         let a = args(&[
             "send",
@@ -1657,7 +1831,7 @@ mod tests {
             "--body-file",
             "/nonexistent/body.txt",
         ]);
-        let m = local_message(send(&offline(), &a, false));
+        let m = local_message(send(&offline(), ME, &a, false));
         assert!(m.starts_with("/nonexistent/body.txt: "), "{m}");
     }
 

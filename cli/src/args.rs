@@ -45,6 +45,7 @@ const WITH_VALUE: &[&str] = &[
     "name",
     "cursor",
     "idempotency-key",
+    "at",
 ];
 
 /// Flags that may be given more than once: recipients and attachments

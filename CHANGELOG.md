@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `emx send --at TIME` holds the message on EMX until that time, given
+  with its zone or as a while from now (`+2h`, `+1d`), and EMX sends it
+  then, whether the computer is on or not. `emx scheduled` lists what
+  waits to go and what failed, `emx scheduled cancel <id>` takes a
+  message back as a draft, and `emx scheduled move <id> --at TIME`
+  moves it. `emx snippets` lists the snippets of the account. The SDK's
+  `send_held` names the draft by the send's key, so that the same call
+  made again after a lost answer holds the message once.
 - The SDK reaches the drafts saved on the server, a shared mailbox's
   among them, with their versions (`drafts`, `draft`, `save_draft`,
   `delete_draft`, `send_draft`), where a change on an older version or

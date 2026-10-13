@@ -170,6 +170,10 @@ impl Client {
         &self.base
     }
 
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
     // --- Me -------------------------------------------------------------
 
     /// Who the token is, and what it can reach.
