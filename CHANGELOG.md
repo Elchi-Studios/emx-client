@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- The SDK makes a call refused with `503 try_later` again after the
+  pause in `Retry-After`, up to 30 seconds (`Client::max_wait` sets
+  another), where a repeat is harmless: reads, changes that leave the
+  same state however often they are made, and a send with its
+  `Idempotency-Key`. The service now answers a fault while it checks
+  the token this way on every route, `GET /api/me`, the raw source,
+  deleting and sending included; it is never a sign-out, and
+  `Error::is_try_later` and `Error::changed_nothing` say so. A call that
+  makes something new is made again only after the per-minute rate
+  limit. A replayed answer under an `Idempotency-Key` sets
+  `Sent::replayed` or `Error::is_replayed`; `405 method_not_allowed`
+  names the methods the path takes. `GET /api/me` gives
+  `limits.maxRecipients`, `limits.hourlyRecipients`, `mailHost` and
+  `listMail` at each address of `sendFrom`, and a send takes
+  `forwardParts` and the list mail `headers`. `raw_download` and
+  `part_download` answer the bytes with the name the service gives
+  them, `filename*` in UTF-8 before the ASCII `filename`, go on with a
+  `Range` of the same version when the transfer breaks, and check a
+  raw source against the SHA-256 in its `ETag`; `safe_file_name`, which
+  the desktop app used on its own, makes a name fit to save under.
 - After Archive, Trash or Delete on the open message, the desktop app
   opens the next message in the list, or the one above at the end of
   it, as the web client does. It closed the message, and `j` then went

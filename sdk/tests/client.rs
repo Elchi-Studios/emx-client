@@ -24,8 +24,8 @@ struct Seen {
 }
 
 /// Starts a server that answers each request with the next scripted
-/// (status, body) pair and remembers what it saw. A 429 says
-/// `Retry-After: 1`.
+/// (status, body) pair and remembers what it saw. A 429 or 503 says
+/// `Retry-After: 1`, as the service gives every one a `Retry-After`.
 fn server(answers: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<Vec<Seen>>>) {
     server_with(
         answers
@@ -34,7 +34,11 @@ fn server(answers: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<Vec<Seen>>>) 
                 (
                     status,
                     body,
-                    if status == 429 { "Retry-After: 1\r\n" } else { "" },
+                    if status == 429 || status == 503 {
+                        "Retry-After: 1\r\n"
+                    } else {
+                        ""
+                    },
                 )
             })
             .collect(),
@@ -665,4 +669,387 @@ fn a_redirect_names_where_it_points_and_is_not_followed() {
     let e = c.me().unwrap_err();
     assert!(e.to_string().contains("redirect"), "{e}");
     assert_eq!(seen.lock().unwrap().len(), 2, "nothing was followed");
+}
+
+const TRY_LATER: &str = r#"{"error":{"code":"try_later","message":"the server cannot check your sign-in right now; try again in a moment"}}"#;
+
+/// A fault while the service checks the token is no sign-out: `me` is
+/// asked again after the pause, and works.
+#[test]
+fn try_later_is_retried_for_a_read_and_is_no_sign_out() {
+    let (base, seen) = server(vec![(503, TRY_LATER), (200, ME_JSON)]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(emx.me().unwrap().name, "Samuel Krauss");
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "waited Retry-After"
+    );
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // Still refused after the retries: an error that passes, not 401.
+    let (base, seen) = server(vec![(503, TRY_LATER), (503, TRY_LATER), (503, TRY_LATER)]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let err = emx.raw(ME, "x1").unwrap_err();
+    assert!(err.is_try_later());
+    assert!(err.is_retryable());
+    assert!(!err.is_unauthorized());
+    assert!(err.changed_nothing());
+    assert_eq!(err.retry_after(), Some(1));
+    assert_eq!(seen.lock().unwrap().len(), 3, "three attempts at most");
+}
+
+/// Changes that leave the same state however often they are made are
+/// made again; one that makes something new is not, after a 503.
+#[test]
+fn try_later_is_retried_only_where_a_repeat_is_harmless() {
+    let (base, seen) = server(vec![
+        (503, TRY_LATER),
+        (200, r#"{"changed":["x1"]}"#),
+        (503, TRY_LATER),
+        (503, TRY_LATER),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    assert_eq!(emx.delete(ME, &["x1"]).unwrap(), vec!["x1"]);
+    let err = emx.create_mailbox(ME, "Projekte", None).unwrap_err();
+    assert!(err.is_try_later());
+    let err = emx.test_webhook("h1").unwrap_err();
+    assert!(err.is_try_later());
+    let seen = seen.lock().unwrap();
+    let calls: Vec<&str> = seen.iter().map(|s| s.path.as_str()).collect();
+    assert_eq!(
+        calls,
+        [
+            "/api/accounts/me/messages/delete",
+            "/api/accounts/me/messages/delete",
+            "/api/accounts/me/mailboxes",
+            "/api/webhooks/h1/test",
+        ]
+    );
+}
+
+/// The rate limit refuses before anything is done, so even a call that
+/// makes something is made again after it.
+#[test]
+fn the_rate_limit_is_retried_for_every_call() {
+    let (base, seen) = server(vec![
+        (429, r#"{"error":{"code":"rate_limited","message":"slow down"}}"#),
+        (200, r#"{"id":"m9","name":"Projekte"}"#),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    assert_eq!(emx.create_mailbox(ME, "Projekte", None).unwrap().id, "m9");
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_pause_above_the_limit_is_left_to_the_caller() {
+    let (base, seen) = server_with(vec![(503, TRY_LATER, "Retry-After: 30\r\n")]);
+    let emx = Client::with_base_url(&base, "emx_test")
+        .unwrap()
+        .max_wait(std::time::Duration::from_secs(5));
+    let started = std::time::Instant::now();
+    let err = emx.me().unwrap_err();
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(err.retry_after(), Some(30));
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+/// The scanner away: the send is made again with the same key, which the
+/// service runs again because it keeps no answer for a 503.
+#[test]
+fn a_send_refused_for_a_passing_fault_goes_again_with_its_key() {
+    let (base, seen) = server_with(vec![
+        (
+            503,
+            r#"{"error":{"code":"try_later","message":"the virus scanner is not answering"}}"#,
+            "Retry-After: 1\r\n",
+        ),
+        (200, SENT, ""),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let sent = emx.send_mail_with_key(&draft(), "rechnung-118").unwrap();
+    assert!(!sent.replayed);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(seen.iter().all(|s| s.idempotency_key == "rechnung-118"));
+}
+
+#[test]
+fn final_refusals_of_a_send_are_not_repeated() {
+    let (base, seen) = server_with(vec![
+        (
+            400,
+            r#"{"error":{"code":"too_many_recipients","message":"at most 100 recipients"}}"#,
+            "",
+        ),
+        (
+            422,
+            r#"{"error":{"code":"idempotency_mismatch","message":"this Idempotency-Key was used for another request; use a new key for a new message"}}"#,
+            "",
+        ),
+        (
+            429,
+            r#"{"error":{"code":"hourly_limit","message":"more than 300 external recipients this hour"}}"#,
+            "Retry-After: 1234\r\n",
+        ),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let err = emx.send_mail(&draft()).unwrap_err();
+    assert_eq!(err.code(), Some("too_many_recipients"));
+    assert!(!err.is_retryable() && err.changed_nothing());
+    let err = emx.send_mail(&draft()).unwrap_err();
+    assert_eq!(err.code(), Some("idempotency_mismatch"));
+    assert!(!err.is_retryable() && err.changed_nothing());
+    let err = emx.send_mail(&draft()).unwrap_err();
+    assert_eq!(err.code(), Some("hourly_limit"));
+    assert_eq!(err.retry_after(), Some(1234), "the exact wait");
+    assert!(!err.is_retryable());
+    assert_eq!(seen.lock().unwrap().len(), 3, "one request each");
+}
+
+/// The answer kept under a key comes back with `Idempotent-Replayed`:
+/// a message sent before, or the refusal it got.
+#[test]
+fn a_replayed_answer_says_so() {
+    let (base, _) = server_with(vec![
+        (200, SENT, "Idempotent-Replayed: true\r\n"),
+        (
+            400,
+            r#"{"error":{"code":"unknown_recipient","message":"no such recipient: nobody@elchi.dev"}}"#,
+            "Idempotent-Replayed: true\r\n",
+        ),
+        (200, SENT, ""),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    assert!(emx.send_mail_with_key(&draft(), "k1").unwrap().replayed);
+    let err = emx.send_mail_with_key(&draft(), "k2").unwrap_err();
+    assert!(err.is_replayed());
+    assert_eq!(err.code(), Some("unknown_recipient"));
+    assert!(!emx.send_mail_with_key(&draft(), "k3").unwrap().replayed);
+}
+
+#[test]
+fn a_method_the_path_does_not_take() {
+    let (base, _) = server_with(vec![
+        (
+            405,
+            r#"{"error":{"code":"method_not_allowed","message":"PATCH is not allowed here; use GET or POST"}}"#,
+            "Allow: GET, POST\r\n",
+        ),
+        (405, "", "Allow: GET, POST\r\nContent-Type: text/plain\r\n"),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let err = emx
+        .call_json("PATCH", "/api/me/webhooks", &serde_json::json!({}))
+        .unwrap_err();
+    assert_eq!(err.code(), Some("method_not_allowed"));
+    assert!(!err.is_retryable() && !err.is_not_found());
+    let err = emx
+        .call_json("PATCH", "/api/me/webhooks", &serde_json::json!({}))
+        .unwrap_err();
+    assert_eq!(err.code(), Some("method_not_allowed"));
+    assert!(err.to_string().contains("GET, POST"), "{err}");
+    let err = emx
+        .call_json("FETCH", "/api/me", &serde_json::json!({}))
+        .unwrap_err();
+    assert!(matches!(err, Error::Config(_)), "{err}");
+}
+
+#[test]
+fn the_limits_a_send_is_held_to() {
+    let me: emx_sdk::Me = serde_json::from_str(
+        r#"{"id":"u1","tenant":{"id":"t1"},"mailHost":"mail.emxmail.app",
+          "limits":{"maxMessageBytes":52428800,"maxRecipients":100,"dailyRecipients":1000,"hourlyRecipients":300,"monthlyRecipients":20000,"monthlyUsed":1520},
+          "sendFrom":[{"address":"news@elchi.dev","mode":"as","listMail":{"hourlyRecipients":5000,"dailyRecipients":50000}},
+                      {"address":"samuel@elchi.dev","mode":"own","primary":true}]}"#,
+    )
+    .unwrap();
+    assert_eq!(me.limits.max_recipients, 100);
+    assert_eq!(me.limits.hourly_recipients, 300);
+    assert_eq!(me.limits.monthly_used, 1520);
+    assert_eq!(me.mail_host, "mail.emxmail.app");
+    assert_eq!(
+        me.send_from[0].list_mail.as_ref().unwrap().daily_recipients,
+        50000
+    );
+    assert!(me.send_from[1].list_mail.is_none());
+    // An older service without them.
+    let me: emx_sdk::Me = serde_json::from_str(r#"{"id":"u1","tenant":{"id":"t1"},"limits":{}}"#).unwrap();
+    assert_eq!((me.limits.max_recipients, me.limits.hourly_recipients), (0, 0));
+}
+
+#[test]
+fn list_mail_and_forwarded_files_are_sent_as_named() {
+    let (base, seen) = server(vec![(200, SENT)]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let mut d = draft();
+    d.headers
+        .insert("List-Id".into(), "Elchi Studios <newsletter.elchi.dev>".into());
+    d.forward_parts.push(emx_sdk::PartRef {
+        account: "me".into(),
+        message: "x1".into(),
+        part: "2".into(),
+    });
+    emx.send_mail(&d).unwrap();
+    let body: serde_json::Value = serde_json::from_str(&seen.lock().unwrap()[0].body).unwrap();
+    assert_eq!(body["headers"]["List-Id"], "Elchi Studios <newsletter.elchi.dev>");
+    assert_eq!(body["forwardParts"][0]["part"], "2");
+}
+
+/// The SHA-256 of "Subject: Offerte\r\n\r\nDanke.\r\n", as the service
+/// gives it for the raw source.
+const RAW: &str = "Subject: Offerte\r\n\r\nDanke.\r\n";
+
+fn raw_etag() -> String {
+    let sum = emx_sdk::webhook::sha256(RAW.as_bytes());
+    format!(
+        "\"{}\"",
+        sum.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    )
+}
+
+#[test]
+fn a_message_is_saved_under_the_name_the_service_gives() {
+    let headers = Box::leak(
+        format!(
+            "Content-Type: message/rfc822\r\nContent-Disposition: attachment; filename=\"Offerte fur Muller.eml\"; filename*=UTF-8''Offerte%20f%C3%BCr%20M%C3%BCller.eml\r\nETag: {}\r\nLast-Modified: Wed, 24 Sep 2026 07:41:12 GMT\r\nAccept-Ranges: bytes\r\n",
+            raw_etag()
+        )
+        .into_boxed_str(),
+    );
+    let (base, _) = server_with(vec![
+        (200, RAW, headers),
+        (200, "changed on the way", headers),
+        (
+            200,
+            "%PDF-1.7",
+            "Content-Type: application/pdf\r\nContent-Disposition: inline; filename=\"Offerte.pdf\"\r\n",
+        ),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let d = emx.raw_download(ME, "x1").unwrap();
+    assert_eq!(d.data, RAW.as_bytes());
+    assert_eq!(d.filename, "Offerte f\u{fc}r M\u{fc}ller.eml");
+    assert_eq!(d.file_name("message.eml"), "Offerte f\u{fc}r M\u{fc}ller.eml");
+    assert_eq!(d.content_type, "message/rfc822");
+    assert_eq!(d.last_modified, "Wed, 24 Sep 2026 07:41:12 GMT");
+    // Bytes that are not the ones the ETag names are refused.
+    let err = emx.raw_download(ME, "x1").unwrap_err();
+    assert!(matches!(err, Error::Transport(_)), "{err}");
+    assert!(err.to_string().contains("damaged"), "{err}");
+    let d = emx.part_download(ME, "x1", "2").unwrap();
+    assert_eq!(d.filename, "Offerte.pdf");
+}
+
+#[test]
+fn file_names_from_a_disposition() {
+    use emx_sdk::disposition_filename as name;
+    assert_eq!(
+        name("attachment; filename=\"a.eml\"; filename*=UTF-8''%E2%82%AC%20rates.eml").as_deref(),
+        Some("\u{20ac} rates.eml")
+    );
+    assert_eq!(
+        name("attachment; filename*=utf-8'de'Gr%C3%BCsse.txt; filename=\"Grusse.txt\"").as_deref(),
+        Some("Gr\u{fc}sse.txt")
+    );
+    assert_eq!(
+        name("attachment; filename=\"say \\\"hi\\\"; now.eml\"").as_deref(),
+        Some("say \"hi\"; now.eml")
+    );
+    assert_eq!(
+        name("attachment; filename=plain.pdf").as_deref(),
+        Some("plain.pdf")
+    );
+    assert_eq!(
+        name("attachment; filename*=iso-8859-1''M%FCller.pdf").as_deref(),
+        Some("M\u{fc}ller.pdf")
+    );
+    // A broken extended value falls back to the plain name.
+    assert_eq!(
+        name("attachment; filename*=UTF-8''%ZZbad; filename=\"ok.pdf\"").as_deref(),
+        Some("ok.pdf")
+    );
+    assert_eq!(name("attachment; filename*=UTF-8''%C3").as_deref(), None);
+    assert_eq!(name("attachment"), None);
+    assert_eq!(name(""), None);
+    assert_eq!(name("inline; filename=\"\""), None);
+}
+
+#[test]
+fn file_names_fit_every_file_system() {
+    use emx_sdk::safe_file_name as safe;
+    assert_eq!(safe("Rechnung 2026.pdf", "x"), "Rechnung 2026.pdf");
+    assert_eq!(safe("../../etc/passwd", "x"), "_.._etc_passwd");
+    assert_eq!(safe(" .. ", "attachment"), "attachment");
+    assert_eq!(safe("CON", "x"), "_CON");
+    assert_eq!(safe("nul.pdf", "x"), "_nul.pdf");
+    assert_eq!(safe("com1.txt", "x"), "_com1.txt");
+    assert_eq!(safe("LPT9", "x"), "_LPT9");
+    assert_eq!(safe("com\u{b9}.log", "x"), "_com\u{b9}.log");
+    assert_eq!(safe("console.pdf", "x"), "console.pdf");
+    assert_eq!(safe("com10.txt", "x"), "com10.txt");
+    assert_eq!(safe("Rechnung\u{202e}fdp.exe", "x"), "Rechnungfdp.exe");
+    assert_eq!(safe("a\u{0}b\nc.eml", "x"), "a_b_c.eml");
+    let long = format!("{}.pdf", "\u{8acb}".repeat(90));
+    let short = safe(&long, "x");
+    assert!(short.len() <= emx_sdk::FILE_NAME_MAX, "{}", short.len());
+    assert!(short.ends_with("\u{8acb}.pdf"), "{short}");
+    assert_eq!(safe(&"a".repeat(300), "x").len(), emx_sdk::FILE_NAME_MAX);
+}
+
+/// A transfer that breaks after its first bytes goes on with a range of
+/// the same version, and the whole is checked against its ETag.
+#[test]
+fn a_broken_download_goes_on_where_it_broke() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let etag = raw_etag();
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for (n, stream) in listener.incoming().enumerate() {
+            let mut stream = stream.unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                head.push_str(&line);
+                line.clear();
+            }
+            log.lock().unwrap().push(head.to_ascii_lowercase());
+            if n == 0 {
+                // The length of the whole, and only its first ten bytes.
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: message/rfc822\r\nETag: {etag}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    RAW.len(),
+                    &RAW[..10]
+                );
+                let _ = stream.flush();
+                drop(stream);
+            } else {
+                let rest = &RAW[10..];
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 206 Partial Content\r\nContent-Type: message/rfc822\r\nETag: {etag}\r\nContent-Range: bytes 10-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{rest}",
+                    RAW.len() - 1,
+                    RAW.len(),
+                    rest.len()
+                );
+                break;
+            }
+        }
+    });
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let d = emx.raw_download(ME, "x1").unwrap();
+    assert_eq!(d.data, RAW.as_bytes());
+    assert_eq!(d.filename, "message.eml", "no name given: the default");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[1].contains("range: bytes=10-"), "{}", seen[1]);
+    assert!(
+        seen[1].contains(&format!("if-range: {}", raw_etag())),
+        "{}",
+        seen[1]
+    );
 }

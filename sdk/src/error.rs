@@ -10,13 +10,19 @@ use std::fmt;
 #[derive(Debug)]
 pub enum Error {
     /// The API refused, with its stable code and a message for a person.
-    /// `status` is the HTTP status. `retry_after` is set on `rate_limited`.
+    /// `status` is the HTTP status. `retry_after` is the pause in seconds
+    /// the service asked for, which every 429 and 503 carries.
+    /// `replayed` is set when a send with an `Idempotency-Key` the
+    /// service had seen got the answer the first request with it got
+    /// (`Idempotent-Replayed: true`): the same refusal again, and
+    /// nothing sent this time either.
     Api {
         status: u16,
         code: String,
         message: String,
         request_id: Option<String>,
         retry_after: Option<u64>,
+        replayed: bool,
     },
     /// The request did not reach the service, or the connection broke.
     Transport(String),
@@ -37,7 +43,18 @@ impl Error {
         }
     }
 
+    /// The pause in seconds the service asked for before the call is
+    /// made again, if it named one.
+    pub fn retry_after(&self) -> Option<u64> {
+        match self {
+            Error::Api { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+
     /// True for `unauthorized`: the token is wrong, expired or revoked.
+    /// Only a 401 is: a `503 try_later` while the service checks the
+    /// token is a fault on its side, and the same token works again.
     pub fn is_unauthorized(&self) -> bool {
         matches!(self, Error::Api { status: 401, .. })
     }
@@ -47,13 +64,23 @@ impl Error {
         matches!(self, Error::Api { status: 404, .. })
     }
 
+    /// True for `503 try_later`: a passing fault on the service's side,
+    /// such as its database not answering while it checks the token, or
+    /// the virus scanner being away while a message with files is sent.
+    /// Nothing was done; the same call works again after `retry_after`.
+    pub fn is_try_later(&self) -> bool {
+        matches!(self, Error::Api { status: 503, code, .. } if code == "try_later")
+    }
+
     /// True when the call may be repeated as it was after a pause: the
     /// connection failed, the per-minute rate limit (`rate_limited`) was
-    /// reached, or the service had a passing problem. Not for any other
-    /// 429: the hourly, daily and monthly sending limits last for hours,
-    /// and the same send is refused again until then. Not for
-    /// `unavailable` either, which means the service at the base URL does
-    /// not offer the call at all.
+    /// reached, or the service had a passing problem (`try_later` and
+    /// other 5xx). Not for any other 429: the hourly, daily and monthly
+    /// sending limits last until `retry_after`, and the same send is
+    /// refused again until then. Not for `unavailable` either, which
+    /// means the service at the base URL does not offer the call at all.
+    /// A send is repeated with the same `Idempotency-Key`, so that it
+    /// cannot go out twice.
     pub fn is_retryable(&self) -> bool {
         match self {
             Error::Api {
@@ -63,6 +90,29 @@ impl Error {
             Error::Transport(_) => true,
             _ => false,
         }
+    }
+
+    /// True when the service answered and the answer says the request
+    /// changed nothing: every refusal below 500, a `503 try_later` and
+    /// `unavailable`. After any other failure, a broken connection or a
+    /// 500, nobody knows whether a send went out, and it is repeated
+    /// with the same `Idempotency-Key` to find out.
+    pub fn changed_nothing(&self) -> bool {
+        match self {
+            Error::Api { status, code, .. } => {
+                *status < 500
+                    || (*status == 503 && (code == "try_later" || code == "unavailable"))
+                    || (*status == 501 && code == "unavailable")
+            }
+            Error::Config(_) => true,
+            Error::Transport(_) | Error::Decode(_) => false,
+        }
+    }
+
+    /// True for the answer kept under an `Idempotency-Key` from an
+    /// earlier request with it, given again instead of doing anything.
+    pub fn is_replayed(&self) -> bool {
+        matches!(self, Error::Api { replayed: true, .. })
     }
 }
 

@@ -787,6 +787,7 @@ fn send(emx: &Client, a: &Args, json: bool) -> Result<(), Fail> {
             .map(|r| vec![r.to_string()])
             .unwrap_or_default(),
         attachments,
+        ..Default::default()
     };
     // One key for this message. When the answer is lost, the message may
     // have gone out or not; the error names the key, and the same command
@@ -1604,6 +1605,7 @@ mod tests {
             message: "slow down".into(),
             request_id: None,
             retry_after: Some(20),
+            replayed: false,
         };
         assert_eq!(retry_wait(&limited, 1), 20);
         assert_eq!(retry_wait(&limited, 60), 60);

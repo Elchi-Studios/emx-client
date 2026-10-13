@@ -14,13 +14,24 @@ cli                                                             ──▶  emx-s
   a `ureq` agent; it is `Clone`, `Send` and `Sync`. Each call builds one
   request, sends it, and either decodes the answer or turns a refusal
   into `Error::Api` with the API's own code and message. A refusal that
-  passes (the per-minute rate limit, a service briefly unavailable) is
-  tried up to twice more after the pause the service asks for, when
-  that pause is a few seconds; a longer one is returned with the error
-  for the caller to decide. Such a refusal comes before the call did
-  anything, and a send carries an `Idempotency-Key`, the same on every
-  attempt, so a repeat cannot send twice. Lasting refusals such as the
-  daily sending limit are returned at once.
+  passes is made again up to twice more after the pause the service
+  asks for in `Retry-After`, when that pause is at most 30 seconds
+  (`Client::max_wait`); a longer one is returned with the error for the
+  caller to decide. The per-minute rate limit refuses before anything
+  is done, so every call is made again after it. A `503 try_later` (a
+  fault on the service's side, such as its database not answering while
+  it checks the token) is made again only where a repeat is harmless:
+  reads, changes that leave the same state however often they are made,
+  and a send, which carries an `Idempotency-Key`, the same on every
+  attempt, so that the service sends it once at most. A 503 is never a
+  sign-out; only a 401 is. Lasting refusals such as the daily sending
+  limit or `too_many_recipients` are returned at once.
+- Downloads (a message's raw source, a part) carry the name the service
+  gives them, `filename*` in UTF-8 as RFC 8187 encodes it before the
+  ASCII `filename`; `safe_file_name` makes it fit to save under. A
+  transfer that breaks goes on with a `Range` of the same version
+  (`If-Range`), and a raw source is checked against the SHA-256 the
+  service gives as its `ETag`.
 - `types.rs` is the records, with serde. Every optional field defaults,
   and unknown fields are ignored, because the service adds fields and
   never removes one.

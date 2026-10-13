@@ -470,7 +470,7 @@ async fn save_part(
     let c = client(&state)?;
     let (data, _) = blocking(move || c.part(&account, &id, &part)).await?;
     let dir = app.path().download_dir().map_err(|e| e.to_string())?;
-    blocking(move || save_new(&dir, &safe_filename(&filename), &data)).await
+    blocking(move || save_new(&dir, &emx_sdk::safe_file_name(&filename, "attachment"), &data)).await
 }
 
 /// Writes `data` to `name` in `dir`, or to `name (2)` and so on when
@@ -488,67 +488,6 @@ fn save_new(dir: &std::path::Path, name: &str, data: &[u8]) -> Result<String, St
     }
     fs::write(&path, data).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path.display().to_string())
-}
-
-/// The longest file name kept, in bytes: file systems allow 255, and
-/// room is left for the ` (2)` of a name that is taken.
-const NAME_MAX: usize = 200;
-
-/// A file name with nothing that could leave the folder or upset a
-/// file system: no separators or characters Windows refuses, no name
-/// Windows keeps for a device (`CON`, `NUL.pdf`), and at most
-/// [`NAME_MAX`] bytes, shortened in front of the extension.
-fn safe_filename(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if c.is_control() || "/\\:*?\"<>|".contains(c) {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect();
-    let mut cleaned = cleaned.trim().trim_matches('.').trim().to_string();
-    if cleaned.is_empty() {
-        return "attachment".into();
-    }
-    let stem = cleaned
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .trim_end()
-        .to_ascii_uppercase();
-    let reserved = matches!(
-        stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-    ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-        && stem.chars().count() == 4
-        && stem
-            .chars()
-            .nth(3)
-            .is_some_and(|c| c.is_ascii_digit() || "¹²³".contains(c)));
-    if reserved {
-        cleaned.insert(0, '_');
-    }
-    shorten(&cleaned, NAME_MAX)
-}
-
-/// `name` in at most `max` bytes, cut on a character boundary in front
-/// of a short extension, which stays.
-fn shorten(name: &str, max: usize) -> String {
-    if name.len() <= max {
-        return name.to_string();
-    }
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some((s, e)) if !s.is_empty() && e.len() <= 16 && !e.contains(' ') => (s, format!(".{e}")),
-        _ => (name, String::new()),
-    };
-    let mut cut = max.saturating_sub(ext.len());
-    while !stem.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!("{}{ext}", stem[..cut].trim_end())
 }
 
 /// Sends with the composer's idempotency key, the same each time Send
@@ -935,26 +874,6 @@ mod tests {
     }
 
     #[test]
-    fn file_names_fit_every_file_system() {
-        assert_eq!(safe_filename("Rechnung 2026.pdf"), "Rechnung 2026.pdf");
-        assert_eq!(safe_filename("../../etc/passwd"), "_.._etc_passwd");
-        assert_eq!(safe_filename(" .. "), "attachment");
-        assert_eq!(safe_filename("CON"), "_CON");
-        assert_eq!(safe_filename("nul.pdf"), "_nul.pdf");
-        assert_eq!(safe_filename("com1.txt"), "_com1.txt");
-        assert_eq!(safe_filename("LPT9"), "_LPT9");
-        assert_eq!(safe_filename("com\u{b9}.log"), "_com\u{b9}.log");
-        assert_eq!(safe_filename("console.pdf"), "console.pdf");
-        assert_eq!(safe_filename("com10.txt"), "com10.txt");
-        let long = format!("{}.pdf", "\u{8acb}".repeat(90));
-        let short = safe_filename(&long);
-        assert!(short.len() <= NAME_MAX, "{}", short.len());
-        assert!(short.ends_with("\u{8acb}.pdf"), "{short}");
-        let no_ext = "a".repeat(300);
-        assert_eq!(safe_filename(&no_ext).len(), NAME_MAX);
-    }
-
-    #[test]
     fn a_kept_placement_is_used_only_where_it_can_be_reached() {
         let screen = [(0, 0, 1920, 1040)];
         let p = Placement {
@@ -1133,6 +1052,7 @@ mod tests {
             message: "the token is not valid".into(),
             request_id: None,
             retry_after: None,
+            replayed: false,
         });
         assert_eq!(refused.code, "bad_token");
         assert!(!refused.retryable);
@@ -1143,6 +1063,7 @@ mod tests {
             message: "HTTP 503".into(),
             request_id: None,
             retry_after: None,
+            replayed: false,
         });
         assert!(down.retryable);
         assert!(!down.message.contains("HTTP 503"));
@@ -1153,6 +1074,7 @@ mod tests {
             message: "this token lacks the mail:write scope".into(),
             request_id: None,
             retry_after: None,
+            replayed: false,
         });
         assert!(!scope.retryable);
         assert!(scope.message.contains("mail:write"));
@@ -1163,6 +1085,7 @@ mod tests {
             message: "at most 600 requests per minute per token".into(),
             request_id: None,
             retry_after: Some(20),
+            replayed: false,
         });
         assert_eq!(busy.code, "rate_limited");
         assert!(busy.retryable);
@@ -1175,6 +1098,7 @@ mod tests {
             message: "more than 300 external recipients this hour".into(),
             request_id: None,
             retry_after: None,
+            replayed: false,
         });
         assert_eq!(hourly.code, "hourly_limit");
         assert!(!hourly.retryable);
@@ -1186,6 +1110,7 @@ mod tests {
             message: "the daily sending limit is reached".into(),
             request_id: None,
             retry_after: None,
+            replayed: false,
         });
         assert_eq!(daily.code, "daily_limit");
         assert!(!daily.retryable);

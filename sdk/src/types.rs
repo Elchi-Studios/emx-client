@@ -43,6 +43,10 @@ pub struct Me {
     /// lock the person out of every program that asks who they are.
     #[serde(default, deserialize_with = "object_or_empty")]
     pub prefs: BTreeMap<String, serde_json::Value>,
+    /// The server a mail app is pointed at, for IMAP on 993 and SMTP on
+    /// 465, both TLS from the first byte.
+    #[serde(default)]
+    pub mail_host: String,
 }
 
 /// An object as a map, and anything else as an empty one.
@@ -135,6 +139,10 @@ pub struct SendFrom {
     pub mode: String,
     #[serde(default)]
     pub primary: bool,
+    /// The numbers list mail from this address is held to, when its
+    /// account is a list sender; absent otherwise.
+    #[serde(default)]
+    pub list_mail: Option<ListLimits>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -157,10 +165,20 @@ pub struct Org {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Limits {
+    /// The largest message, attachments and text as mail encodes them.
     #[serde(default)]
     pub max_message_bytes: i64,
+    /// The most recipients of one message, To, Cc and Bcc together; more
+    /// is refused with `too_many_recipients`. 0 when the service did not
+    /// say.
+    #[serde(default)]
+    pub max_recipients: i64,
     #[serde(default)]
     pub daily_recipients: i64,
+    /// Recipients outside the organisation per hour; more is refused with
+    /// `hourly_limit` until enough of the hour's have left it.
+    #[serde(default)]
+    pub hourly_recipients: i64,
     /// 0 means unlimited.
     #[serde(default)]
     pub monthly_recipients: i64,
@@ -405,6 +423,27 @@ pub struct Draft {
     pub references: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<DraftAttachment>,
+    /// Files of messages the person can read, named instead of uploaded,
+    /// as a forward attaches them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub forward_parts: Vec<PartRef>,
+    /// The fields of list mail: `List-Id`, `List-Unsubscribe`,
+    /// `List-Unsubscribe-Post` and `Precedence`, written as given and
+    /// covered by the signature. Any other is refused.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+}
+
+/// An attachment of a message the person can read, to attach without
+/// uploading it again.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PartRef {
+    /// `me` or an account id from [`Me::accounts`].
+    pub account: String,
+    pub message: String,
+    /// The `part` of one of the message's [`Attachment`]s.
+    pub part: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -426,6 +465,37 @@ pub struct Sent {
     pub sent: bool,
     #[serde(default)]
     pub recipients: i64,
+    /// True when the service answered with what it kept under the send's
+    /// `Idempotency-Key`: the message went out with an earlier request,
+    /// and not again.
+    #[serde(default)]
+    pub replayed: bool,
+}
+
+/// A download: a message as received or one of its parts, with the name
+/// and type the service gives it.
+#[derive(Debug, Clone, Default)]
+pub struct Download {
+    pub data: Vec<u8>,
+    /// As the service names it in `Content-Disposition`, `filename*` in
+    /// UTF-8 before the ASCII `filename`; empty when it names none. Not
+    /// safe to save under as it is: see [`Download::file_name`].
+    pub filename: String,
+    pub content_type: String,
+    /// The version of what was sent, quoted; a message's raw source has
+    /// the SHA-256 of its bytes.
+    pub etag: String,
+    /// When it arrived, as HTTP writes a date.
+    pub last_modified: String,
+}
+
+impl Download {
+    /// The name to save it under: [`filename`](Download::filename) made
+    /// safe for every file system by [`crate::safe_file_name`], or
+    /// `fallback`.
+    pub fn file_name(&self, fallback: &str) -> String {
+        crate::safe_file_name(&self.filename, fallback)
+    }
 }
 
 /// A URL of the person's that hears about an account's events.

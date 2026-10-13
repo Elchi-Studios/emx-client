@@ -10,10 +10,12 @@ use crate::types::*;
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 
-/// The longest pause the client waits out by itself before trying a
-/// refused call again. A longer one is the caller's to decide on: the
-/// error carries it as `retry_after`.
-const MAX_WAIT: Duration = Duration::from_secs(5);
+/// The longest pause the client waits out by itself before making a
+/// refused call again, unless [`Client::max_wait`] sets another. The
+/// service asks for 5 seconds after a fault while it checks the token
+/// and 30 after another passing fault. A longer pause is the caller's to
+/// decide on: the error carries it as `retry_after`.
+const MAX_WAIT: Duration = Duration::from_secs(30);
 
 /// How long a send may wait for its answer once the message is uploaded.
 /// The service gives the submission two minutes; a client that gave up
@@ -52,6 +54,8 @@ pub struct Client {
     /// The certificates trusted for TLS: the bundled roots, or those
     /// given to [`Client::trust_only`].
     tls: ureq::tls::TlsConfig,
+    /// The longest pause waited out before a call is made again.
+    max_wait: Duration,
 }
 
 /// One page of a list, with the cursor for the next one.
@@ -95,6 +99,7 @@ impl Client {
             token: token.to_string(),
             user_agent: format!("emx-sdk/{}", env!("CARGO_PKG_VERSION")),
             tls,
+            max_wait: MAX_WAIT,
         })
     }
 
@@ -134,6 +139,16 @@ impl Client {
         self
     }
 
+    /// The longest pause the client waits out by itself, at most twice
+    /// per call, before making a refused call again: 30 seconds unless
+    /// set here. A refusal that asks for a longer pause is returned at
+    /// once, with the pause as [`Error::retry_after`]. Zero makes every
+    /// call once and leaves every pause to the caller.
+    pub fn max_wait(mut self, wait: Duration) -> Client {
+        self.max_wait = wait;
+        self
+    }
+
     /// The client with a shorter silence for event streams, for tests
     /// that cannot wait a minute.
     #[cfg(test)]
@@ -164,7 +179,7 @@ impl Client {
 
     /// Merges preferences; a `null` removes a key.
     pub fn set_prefs(&self, prefs: &serde_json::Value) -> Result<serde_json::Value, Error> {
-        let v: serde_json::Value = self.send("PATCH", "/api/me/prefs", prefs)?;
+        let v: serde_json::Value = self.send("PATCH", "/api/me/prefs", prefs, Repeat::Safe)?;
         Ok(v.get("prefs").cloned().unwrap_or(serde_json::Value::Null))
     }
 
@@ -183,6 +198,7 @@ impl Client {
             "POST",
             &format!("/api/accounts/{}/mailboxes", seg(account)),
             &body,
+            Repeat::Once,
         )
     }
 
@@ -217,7 +233,9 @@ impl Client {
         )
     }
 
-    /// The message as received, RFC 822 bytes.
+    /// The message as received, RFC 822 bytes; in a sealed mailbox, the
+    /// age ciphertext. See [`raw_download`](Client::raw_download) for its
+    /// file name.
     pub fn raw(&self, account: &str, id: &str) -> Result<Vec<u8>, Error> {
         self.bytes(&format!(
             "/api/accounts/{}/messages/{}/raw",
@@ -226,9 +244,33 @@ impl Client {
         ))
     }
 
+    /// The message as received, with the name to save it under: its
+    /// subject and `.eml` (`message.eml` without one), or for a sealed
+    /// message `sealed-....eml.age`, as the service names it. The bytes
+    /// are checked against the SHA-256 the service gives as their
+    /// `ETag`, and a transfer that breaks goes on where it broke.
+    /// [`Download::file_name`] makes the name safe to save under.
+    pub fn raw_download(&self, account: &str, id: &str) -> Result<Download, Error> {
+        let mut d = self.download(&format!(
+            "/api/accounts/{}/messages/{}/raw",
+            seg(account),
+            seg(id)
+        ))?;
+        if d.filename.is_empty() {
+            d.filename = "message.eml".into();
+        }
+        Ok(d)
+    }
+
     /// One part of a message, as bytes with its content type.
     pub fn part(&self, account: &str, id: &str, part: &str) -> Result<(Vec<u8>, String), Error> {
-        self.bytes_typed(&format!(
+        let d = self.part_download(account, id, part)?;
+        Ok((d.data, d.content_type))
+    }
+
+    /// One part of a message, with the name the service gives it.
+    pub fn part_download(&self, account: &str, id: &str, part: &str) -> Result<Download, Error> {
+        self.download(&format!(
             "/api/accounts/{}/messages/{}/parts/{}",
             seg(account),
             seg(id),
@@ -303,6 +345,7 @@ impl Client {
             "POST",
             &format!("/api/accounts/{}/messages/keywords", seg(account)),
             &body,
+            Repeat::Safe,
         )?;
         Ok(v.changed)
     }
@@ -323,6 +366,7 @@ impl Client {
             "POST",
             &format!("/api/accounts/{}/messages/move", seg(account)),
             &body,
+            Repeat::Safe,
         )?;
         Ok(v.changed)
     }
@@ -335,6 +379,7 @@ impl Client {
             "POST",
             &format!("/api/accounts/{}/messages/delete", seg(account)),
             &body,
+            Repeat::Safe,
         )?;
         Ok(v.changed)
     }
@@ -347,6 +392,7 @@ impl Client {
             "POST",
             &format!("/api/accounts/{}/messages/snooze", seg(account)),
             &body,
+            Repeat::Safe,
         )?;
         Ok(v.changed)
     }
@@ -403,8 +449,12 @@ impl Client {
     /// to the inbox; blocking moves them to Trash.
     pub fn set_contact(&self, account: &str, address: &str, state: &str, name: &str) -> Result<(), Error> {
         let body = serde_json::json!({"address": address, "state": state, "name": name});
-        let _: serde_json::Value =
-            self.send("POST", &format!("/api/accounts/{}/contacts", seg(account)), &body)?;
+        let _: serde_json::Value = self.send(
+            "POST",
+            &format!("/api/accounts/{}/contacts", seg(account)),
+            &body,
+            Repeat::Safe,
+        )?;
         Ok(())
     }
 
@@ -414,6 +464,7 @@ impl Client {
             "DELETE",
             &format!("/api/accounts/{}/contacts/{}", seg(account), seg(address)),
             &serde_json::Value::Null,
+            Repeat::Safe,
         )?;
         Ok(())
     }
@@ -438,13 +489,24 @@ impl Client {
     /// makes one. A key is 1 to 200 visible ASCII characters; any other
     /// is refused before anything is sent, as an empty one would send
     /// without the protection and a longer one is refused by the service.
+    ///
+    /// A send refused for a passing fault (`503 try_later`: the service
+    /// could not check the token, or its virus scanner is away) is made
+    /// again with the same key after the pause the service asks for, up
+    /// to [`Client::max_wait`]; the service keeps no answer for it, so
+    /// the same request runs again and the message goes out once.
+    /// `400 too_many_recipients`, `422 refused_content` and the other
+    /// refusals below 500 are final for this message: the same request
+    /// gets the same answer, replayed under the key
+    /// ([`Error::is_replayed`]). The hourly, daily and monthly limits
+    /// (`429`) are returned with the exact wait in
+    /// [`Error::retry_after`]. A different message with a key used
+    /// already is refused with `422 idempotency_mismatch` and nothing is
+    /// sent: every message needs a key of its own.
     pub fn send_mail_with_key(&self, draft: &Draft, key: &str) -> Result<Sent, Error> {
-        if key.is_empty() || key.len() > 200 || !key.bytes().all(|b| b.is_ascii_graphic()) {
-            return Err(Error::Config(
-                "an idempotency key is 1 to 200 visible ASCII characters, without spaces".into(),
-            ));
-        }
-        self.send_with("POST", "/api/send", draft, Some(key), Some(SEND_TIMEOUT))
+        let (mut sent, replayed): (Sent, bool) = self.send_keyed("/api/send", draft, key)?;
+        sent.replayed = replayed;
+        Ok(sent)
     }
 
     // --- Webhooks ---------------------------------------------------------
@@ -465,7 +527,12 @@ impl Client {
         description: &str,
     ) -> Result<NewWebhook, Error> {
         let body = serde_json::json!({"url": url, "events": events, "description": description});
-        self.send("POST", &format!("/api/accounts/{}/webhooks", seg(account)), &body)
+        self.send(
+            "POST",
+            &format!("/api/accounts/{}/webhooks", seg(account)),
+            &body,
+            Repeat::Once,
+        )
     }
 
     pub fn delete_webhook(&self, id: &str) -> Result<(), Error> {
@@ -473,6 +540,7 @@ impl Client {
             "DELETE",
             &format!("/api/webhooks/{}", seg(id)),
             &serde_json::Value::Null,
+            Repeat::Safe,
         )?;
         Ok(())
     }
@@ -483,6 +551,7 @@ impl Client {
             "POST",
             &format!("/api/webhooks/{}/test", seg(id)),
             &serde_json::Value::Null,
+            Repeat::Once,
         )?;
         Ok(())
     }
@@ -493,6 +562,7 @@ impl Client {
             "POST",
             &format!("/api/webhooks/{}/enable", seg(id)),
             &serde_json::Value::Null,
+            Repeat::Safe,
         )?;
         Ok(())
     }
@@ -517,159 +587,297 @@ impl Client {
     }
 
     /// Any other call under the API with a JSON body, decoded as JSON.
+    /// `PUT` and `DELETE` are made again after a `503 try_later`, as HTTP
+    /// has them repeatable; `POST` and `PATCH` only after the rate limit.
     pub fn call_json(
         &self,
         method: &str,
         path: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, Error> {
-        self.send(method, path, body)
+        let repeat = match method {
+            "PUT" | "DELETE" => Repeat::Safe,
+            _ => Repeat::Once,
+        };
+        self.send(method, path, body, repeat)
     }
 
     // --- The wire ----------------------------------------------------------
 
     fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T, Error> {
-        let url = self.url(path, query);
-        let resp = self.with_retry(|| {
-            self.agent
-                .get(&url)
-                .header("Authorization", &format!("Bearer {}", self.token))
-                .header("Accept", "application/json")
-                .header("User-Agent", &self.user_agent)
-                .call()
-        })?;
-        self.decode(resp)
+        let resp = self.exchange("GET", &self.url(path, query), None, &[], None, Repeat::Safe)?;
+        Ok(self.decode(resp)?.0)
     }
 
+    /// A call with a JSON body. `repeat` says whether a `503 try_later`
+    /// may be answered by making the call again: see [`Repeat`].
     fn send<B: serde::Serialize, T: DeserializeOwned>(
         &self,
         method: &str,
         path: &str,
         body: &B,
+        repeat: Repeat,
     ) -> Result<T, Error> {
-        self.send_with(method, path, body, None, None)
+        let raw = serde_json::to_vec(body)?;
+        // A deletion without a body sends none.
+        let body = (method != "DELETE" || raw != b"null").then_some(raw.as_slice());
+        let resp = self.exchange(method, &self.url(path, &[]), body, &[], None, repeat)?;
+        Ok(self.decode(resp)?.0)
     }
 
-    /// A call with a JSON body, with an `Idempotency-Key` and a limit of
-    /// its own when given.
-    fn send_with<B: serde::Serialize, T: DeserializeOwned>(
+    /// Sends a message with its `Idempotency-Key`, with the longer limit
+    /// a send has for its answer, and answers whether the service gave
+    /// the answer kept under the key (`Idempotent-Replayed`).
+    fn send_keyed<B: serde::Serialize, T: DeserializeOwned>(
         &self,
-        method: &str,
         path: &str,
         body: &B,
-        key: Option<&str>,
-        timeout: Option<Duration>,
-    ) -> Result<T, Error> {
-        let url = self.url(path, &[]);
-        let raw = serde_json::to_string(body)?;
-        let resp = self.with_retry(|| {
-            let mut req = match method {
-                "POST" => self.agent.post(&url),
-                "PATCH" => self.agent.patch(&url),
-                "PUT" => self.agent.put(&url),
-                "DELETE" => self.agent.delete(&url).force_send_body(),
-                _ => self.agent.post(&url),
-            };
-            if let Some(t) = timeout {
-                req = req.config().timeout_recv_response(Some(t)).build();
-            }
-            if let Some(k) = key {
-                req = req.header("Idempotency-Key", k);
-            }
-            req.header("Authorization", &format!("Bearer {}", self.token))
-                .header("Accept", "application/json")
-                .header("Content-Type", "application/json")
-                .header("User-Agent", &self.user_agent)
-                .send(raw.as_bytes())
-        })?;
+        key: &str,
+    ) -> Result<(T, bool), Error> {
+        check_key(key)?;
+        let raw = serde_json::to_vec(body)?;
+        let headers = [("Idempotency-Key", key.to_string())];
+        let resp = self.exchange(
+            "POST",
+            &self.url(path, &[]),
+            Some(&raw),
+            &headers,
+            Some(SEND_TIMEOUT),
+            Repeat::Safe,
+        )?;
         self.decode(resp)
     }
 
-    fn bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
-        Ok(self.bytes_typed(path)?.0)
-    }
-
-    fn bytes_typed(&self, path: &str) -> Result<(Vec<u8>, String), Error> {
-        let url = self.url(path, &[]);
-        let resp = self.with_retry(|| {
-            self.agent
-                .get(&url)
-                .header("Authorization", &format!("Bearer {}", self.token))
-                .header("User-Agent", &self.user_agent)
-                .call()
-        })?;
-        if resp.status().as_u16() >= 300 {
-            return Err(self.refusal(resp));
-        }
-        let kind = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let data = resp
-            .into_body()
-            .with_config()
-            .limit(256 << 20)
-            .read_to_vec()
-            .map_err(|e| Error::Transport(e.to_string()))?;
-        Ok((data, kind))
-    }
-
-    /// Runs a request, and up to twice more after a pause when the refusal
-    /// is one that passes: the per-minute rate limit, or a service that is
-    /// briefly unavailable (see [`Error::is_retryable`]). Such a request
-    /// was refused before it did anything, and a send carries an
-    /// `Idempotency-Key` besides, so repeating it cannot do a thing twice.
+    /// Makes one request and answers its response, whatever its status,
+    /// after making it again where a refusal passes: up to twice more,
+    /// after the pause the service asks for (`Retry-After`), when that
+    /// pause is at most [`Client::max_wait`].
+    ///
+    /// The per-minute rate limit is answered before the call does
+    /// anything, so every call is made again after it. A `503 try_later`
+    /// (or a 503 from a proxy in front of the service) is made again
+    /// only for a call that may safely be repeated, `repeat` being
+    /// [`Repeat::Safe`]: one that reads, one that leaves the same state
+    /// however often it is made, and a send with its `Idempotency-Key`,
+    /// the same on every attempt, which the service sends once at most.
     /// Any other refusal, a daily sending limit for one, would answer the
-    /// same again and is returned at once, and so is a pause longer than
-    /// [`MAX_WAIT`]: the error carries it as `retry_after` and the caller
-    /// decides whether to wait, instead of hanging without a word.
-    fn with_retry<F>(&self, mut f: F) -> Result<ureq::http::Response<ureq::Body>, Error>
-    where
-        F: FnMut() -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
-    {
+    /// same again and is returned at once, and so is a longer pause: the
+    /// error carries it as `retry_after` and the caller decides whether
+    /// to wait, instead of hanging without a word.
+    fn exchange(
+        &self,
+        method: &str,
+        url: &str,
+        body: Option<&[u8]>,
+        headers: &[(&str, String)],
+        timeout: Option<Duration>,
+        repeat: Repeat,
+    ) -> Result<ureq::http::Response<ureq::Body>, Error> {
         let mut tries = 0;
         loop {
             tries += 1;
-            let resp = f().map_err(|e| Error::Transport(e.to_string()))?;
+            let resp = self
+                .request(method, url, body, headers, timeout)?
+                .map_err(|e| Error::Transport(e.to_string()))?;
             let status = resp.status().as_u16();
             if status != 429 && status != 503 {
                 return Ok(resp);
             }
             let err = self.refusal(resp);
-            let wait = match &err {
-                Error::Api { retry_after, .. } => Duration::from_secs(retry_after.unwrap_or(2).max(1)),
-                _ => MAX_WAIT,
+            let again = match &err {
+                Error::Api {
+                    status: 429, code, ..
+                } => code == "rate_limited",
+                Error::Api {
+                    status: 503, code, ..
+                } => repeat == Repeat::Safe && (code == "try_later" || code == "http_503"),
+                _ => false,
             };
-            if tries >= 3 || !err.is_retryable() || wait > MAX_WAIT {
+            let wait = Duration::from_secs(err.retry_after().unwrap_or(2).max(1));
+            if tries >= 3 || !again || wait > self.max_wait {
                 return Err(err);
             }
             std::thread::sleep(wait);
         }
     }
 
-    fn decode<T: DeserializeOwned>(&self, resp: ureq::http::Response<ureq::Body>) -> Result<T, Error> {
+    /// One request, with the token and the headers every call carries.
+    /// The outer error is a method the client does not make.
+    fn request(
+        &self,
+        method: &str,
+        url: &str,
+        body: Option<&[u8]>,
+        headers: &[(&str, String)],
+        timeout: Option<Duration>,
+    ) -> Result<Result<ureq::http::Response<ureq::Body>, ureq::Error>, Error> {
+        let auth = format!("Bearer {}", self.token);
+        macro_rules! dress {
+            ($req:expr) => {{
+                let mut req = $req;
+                if let Some(t) = timeout {
+                    req = req.config().timeout_recv_response(Some(t)).build();
+                }
+                req = req
+                    .header("Authorization", &auth)
+                    .header("User-Agent", &self.user_agent);
+                for (name, value) in headers {
+                    req = req.header(*name, value);
+                }
+                req
+            }};
+        }
+        Ok(match (method, body) {
+            ("GET", _) => dress!(self.agent.get(url))
+                .header("Accept", "application/json")
+                .call(),
+            ("DELETE", None) => dress!(self.agent.delete(url))
+                .header("Accept", "application/json")
+                .call(),
+            (m, body) => {
+                let req = match m {
+                    "POST" => self.agent.post(url),
+                    "PATCH" => self.agent.patch(url),
+                    "PUT" => self.agent.put(url),
+                    "DELETE" => self.agent.delete(url).force_send_body(),
+                    other => {
+                        return Err(Error::Config(format!(
+                            "{other} is not a method of the API; use GET, POST, PATCH, PUT or DELETE"
+                        )))
+                    }
+                };
+                dress!(req)
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json")
+                    .send(body.unwrap_or(b"null"))
+            }
+        })
+    }
+
+    fn bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
+        Ok(self.download(path)?.data)
+    }
+
+    /// A download: the bytes, with the name and type the service gives
+    /// them. A transfer that breaks after its first bytes goes on from
+    /// where it broke, as long as the service names the version of what
+    /// it sends (`ETag`) and still has that version (`If-Range`); a
+    /// download whose `ETag` is the SHA-256 of its bytes, as a message's
+    /// raw source is, is checked against it.
+    fn download(&self, path: &str) -> Result<Download, Error> {
+        let url = self.url(path, &[]);
+        let resp = self.exchange("GET", &url, None, &[], None, Repeat::Safe)?;
         if resp.status().as_u16() >= 300 {
             return Err(self.refusal(resp));
         }
+        let header = |resp: &ureq::http::Response<ureq::Body>, name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let mut out = Download {
+            data: Vec::new(),
+            filename: disposition_filename(&header(&resp, "content-disposition")).unwrap_or_default(),
+            content_type: header(&resp, "content-type"),
+            etag: header(&resp, "etag"),
+            last_modified: header(&resp, "last-modified"),
+        };
+        let mut resp = resp;
+        let mut resumes = 0;
+        loop {
+            let mut reader = resp
+                .into_body()
+                .into_with_config()
+                .limit(DOWNLOAD_LIMIT.saturating_sub(out.data.len() as u64))
+                .reader();
+            let read = std::io::copy(&mut reader, &mut out.data);
+            if read.is_err() && out.data.len() as u64 >= DOWNLOAD_LIMIT {
+                return Err(Error::Transport(format!(
+                    "the download is larger than {} MB, the most taken",
+                    DOWNLOAD_LIMIT >> 20
+                )));
+            }
+            match read {
+                Ok(_) => break,
+                // Broken on the way: asked again for the rest, of the same
+                // version only. A weak ETag cannot ask for a range.
+                Err(e) if resumes < 3 && !out.data.is_empty() && out.etag.starts_with('"') => {
+                    resumes += 1;
+                    let from = out.data.len();
+                    let headers = [
+                        ("Range", format!("bytes={from}-")),
+                        ("If-Range", out.etag.clone()),
+                    ];
+                    let next = self
+                        .exchange("GET", &url, None, &headers, None, Repeat::Safe)
+                        .map_err(|_| Error::Transport(e.to_string()))?;
+                    match next.status().as_u16() {
+                        206 if header(&next, "content-range").starts_with(&format!("bytes {from}-")) => {}
+                        // The whole of it again: the version changed, or
+                        // the service does not take ranges here.
+                        200 => {
+                            out.data.clear();
+                            out.etag = header(&next, "etag");
+                        }
+                        s if s >= 300 => return Err(self.refusal(next)),
+                        _ => return Err(Error::Transport(e.to_string())),
+                    }
+                    resp = next;
+                }
+                Err(e) => return Err(Error::Transport(e.to_string())),
+            }
+        }
+        if let Some(want) = sha256_etag(&out.etag) {
+            if crate::webhook::sha256(&out.data) != want {
+                return Err(Error::Transport(format!(
+                    "the download arrived damaged: {} bytes that are not the ones EMX sent",
+                    out.data.len()
+                )));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Decodes a JSON answer, or turns a refusal into its error. Answers
+    /// whether the service replayed an answer kept under an
+    /// `Idempotency-Key`.
+    fn decode<T: DeserializeOwned>(
+        &self,
+        resp: ureq::http::Response<ureq::Body>,
+    ) -> Result<(T, bool), Error> {
+        if resp.status().as_u16() >= 300 {
+            return Err(self.refusal(resp));
+        }
+        let replayed = replayed(&resp);
         let text = resp
             .into_body()
             .with_config()
             .limit(64 << 20)
             .read_to_string()
             .map_err(|e| Error::Transport(e.to_string()))?;
-        serde_json::from_str(&text).map_err(|e| Error::Decode(format!("{e}: {}", excerpt(&text))))
+        let v = serde_json::from_str(&text).map_err(|e| Error::Decode(format!("{e}: {}", excerpt(&text))))?;
+        Ok((v, replayed))
     }
 
     /// Turns a refused answer into the error the API described.
     fn refusal(&self, resp: ureq::http::Response<ureq::Body>) -> Error {
+        self.refusal_with(resp).0
+    }
+
+    /// [`refusal`](Client::refusal), and the answer's JSON body when it
+    /// had one, for a refusal that carries more than the error, as a
+    /// draft's `409` carries the draft.
+    fn refusal_with(&self, resp: ureq::http::Response<ureq::Body>) -> (Error, Option<serde_json::Value>) {
         let status = resp.status().as_u16();
         let retry_after = resp
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        let replayed = replayed(&resp);
         // A redirect is not followed, so that the token never goes to
         // another address; the error names where it pointed, which is
         // usually the base URL to use instead.
@@ -691,24 +899,28 @@ impl Client {
                     self.base
                 )
             };
-            return Error::Api {
+            let e = Error::Api {
                 status,
                 code: "redirect".into(),
                 message,
                 request_id: None,
                 retry_after: None,
+                replayed: false,
             };
+            return (e, None);
         }
+        let allow = resp
+            .headers()
+            .get("allow")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| excerpt(v.trim()))
+            .unwrap_or_default();
         let text = resp
             .into_body()
             .with_config()
-            .limit(1 << 20)
+            .limit(4 << 20)
             .read_to_string()
             .unwrap_or_default();
-        #[derive(serde::Deserialize)]
-        struct Wrapped {
-            error: Refusal,
-        }
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Refusal {
@@ -717,32 +929,43 @@ impl Client {
             #[serde(default)]
             request_id: Option<String>,
         }
-        match serde_json::from_str::<Wrapped>(&text) {
-            Ok(w) => Error::Api {
+        let body: Option<serde_json::Value> = serde_json::from_str(&text).ok();
+        let refusal = body
+            .as_ref()
+            .and_then(|b| b.get("error"))
+            .and_then(|e| serde_json::from_value::<Refusal>(e.clone()).ok());
+        let e = match refusal {
+            Some(r) => Error::Api {
                 status,
-                code: w.error.code,
-                message: w.error.message,
-                request_id: w.error.request_id,
+                code: r.code,
+                message: r.message,
+                request_id: r.request_id,
                 retry_after,
+                replayed,
             },
-            Err(_) => Error::Api {
+            None => Error::Api {
                 status,
                 code: match status {
                     401 => "unauthorized".into(),
                     403 => "not_permitted".into(),
                     404 => "not_found".into(),
+                    405 => "method_not_allowed".into(),
                     429 => "rate_limited".into(),
                     _ => format!("http_{status}"),
                 },
-                message: if text.trim().is_empty() {
+                message: if status == 405 && !allow.is_empty() {
+                    format!("the method is not allowed here; use {allow}")
+                } else if text.trim().is_empty() {
                     format!("HTTP {status}")
                 } else {
                     excerpt(&text)
                 },
                 request_id: None,
                 retry_after,
+                replayed,
             },
-        }
+        };
+        (e, body)
     }
 
     fn url(&self, path: &str, query: &[(&str, &str)]) -> String {
@@ -757,6 +980,230 @@ impl Client {
         }
         url
     }
+}
+
+/// Whether a failed call may be made again after a `503 try_later`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Repeat {
+    /// Made again: a read, a change that leaves the same state however
+    /// often it is made (flags, a move, a deletion, a save of a whole
+    /// record under its own id), or a send with its `Idempotency-Key`.
+    Safe,
+    /// Made again only after the per-minute rate limit, which refuses
+    /// before anything is done: a call that makes something new, or
+    /// that does something each time it is made, such as a test ping.
+    Once,
+}
+
+/// The largest download taken, a message or an attachment.
+const DOWNLOAD_LIMIT: u64 = 256 << 20;
+
+/// Whether the service answered with what it kept under an
+/// `Idempotency-Key`.
+fn replayed(resp: &ureq::http::Response<ureq::Body>) -> bool {
+    resp.headers()
+        .get("idempotent-replayed")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
+}
+
+/// The SHA-256 an `ETag` names, when it is one: a strong tag of 64 hex
+/// digits, as the service gives a message's raw source.
+fn sha256_etag(etag: &str) -> Option<[u8; 32]> {
+    let hex = etag.strip_prefix('"')?.strip_suffix('"')?;
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// A key the service takes: 1 to 200 visible ASCII characters. Any other
+/// is refused before anything is sent, as an empty one would send without
+/// the protection and a longer one is refused by the service.
+fn check_key(key: &str) -> Result<(), Error> {
+    if key.is_empty() || key.len() > 200 || !key.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(Error::Config(
+            "an idempotency key is 1 to 200 visible ASCII characters, without spaces".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The file name a `Content-Disposition` gives: `filename*` as RFC 8187
+/// encodes it, in UTF-8 or ISO-8859-1, before the plain `filename`,
+/// which older programs read. None when it names none.
+pub fn disposition_filename(header: &str) -> Option<String> {
+    let mut plain = None;
+    let mut extended = None;
+    for (name, value) in disposition_params(header) {
+        match name.to_ascii_lowercase().as_str() {
+            "filename*" if extended.is_none() => extended = decode_ext_value(&value),
+            "filename" if plain.is_none() => plain = Some(value),
+            _ => {}
+        }
+    }
+    extended.or(plain).filter(|n| !n.trim().is_empty())
+}
+
+/// The parameters after the disposition type, each name with its value,
+/// quoted strings unquoted and their escapes undone.
+fn disposition_params(header: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut chars = header.chars().peekable();
+    // The type itself, up to the first semicolon.
+    for c in chars.by_ref() {
+        if c == ';' {
+            break;
+        }
+    }
+    loop {
+        let mut name = String::new();
+        for c in chars.by_ref() {
+            if c == '=' || c == ';' {
+                break;
+            }
+            name.push(c);
+        }
+        let name = name.trim().to_string();
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+        let mut value = String::new();
+        if chars.peek() == Some(&'"') {
+            chars.next();
+            while let Some(c) = chars.next() {
+                match c {
+                    '\\' => {
+                        if let Some(n) = chars.next() {
+                            value.push(n);
+                        }
+                    }
+                    '"' => break,
+                    c => value.push(c),
+                }
+            }
+            for c in chars.by_ref() {
+                if c == ';' {
+                    break;
+                }
+            }
+        } else {
+            for c in chars.by_ref() {
+                if c == ';' {
+                    break;
+                }
+                value.push(c);
+            }
+            value = value.trim().to_string();
+        }
+        if !name.is_empty() {
+            out.push((name, value));
+        }
+        if chars.peek().is_none() {
+            return out;
+        }
+    }
+}
+
+/// An RFC 8187 `ext-value`: `charset'language'percent-encoded`.
+fn decode_ext_value(v: &str) -> Option<String> {
+    let mut parts = v.splitn(3, '\'');
+    let charset = parts.next()?.trim().to_ascii_lowercase();
+    let _language = parts.next()?;
+    let encoded = parts.next()?;
+    let mut bytes = Vec::with_capacity(encoded.len());
+    let raw = encoded.as_bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] == b'%' {
+            let hex = encoded.get(i + 1..i + 3)?;
+            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            bytes.push(raw[i]);
+            i += 1;
+        }
+    }
+    match charset.as_str() {
+        "utf-8" => String::from_utf8(bytes).ok(),
+        "iso-8859-1" => Some(bytes.iter().map(|&b| b as char).collect()),
+        _ => None,
+    }
+}
+
+/// The longest file name [`safe_file_name`] keeps, in bytes: file systems
+/// allow 255, and room is left for the ` (2)` of a name that is taken.
+pub const FILE_NAME_MAX: usize = 200;
+
+/// A name to save a file under, made from one the service or a message
+/// gave: nothing that could leave the folder or that a file system
+/// refuses. No separators, control or direction characters, or
+/// characters Windows refuses; no name Windows keeps for a device (`CON`,
+/// `NUL.pdf`); no leading or trailing dots; at most [`FILE_NAME_MAX`]
+/// bytes, shortened in front of the extension. `fallback` when nothing is
+/// left.
+pub fn safe_file_name(name: &str, fallback: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .filter(|c| !is_direction_mark(*c))
+        .map(|c| {
+            if c.is_control() || "/\\:*?\"<>|".contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut cleaned = cleaned.trim().trim_matches('.').trim().to_string();
+    if cleaned.is_empty() {
+        return fallback.to_string();
+    }
+    let stem = cleaned
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
+    let reserved = matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+        && stem.chars().count() == 4
+        && stem
+            .chars()
+            .nth(3)
+            .is_some_and(|c| c.is_ascii_digit() || "\u{b9}\u{b2}\u{b3}".contains(c)));
+    if reserved {
+        cleaned.insert(0, '_');
+    }
+    shorten(&cleaned, FILE_NAME_MAX)
+}
+
+/// The characters that turn the direction of text around, which can make
+/// `fdp.exe` read as `exe.pdf`.
+fn is_direction_mark(c: char) -> bool {
+    matches!(c, '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// `name` in at most `max` bytes, cut on a character boundary in front
+/// of a short extension, which stays.
+fn shorten(name: &str, max: usize) -> String {
+    if name.len() <= max {
+        return name.to_string();
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() && e.len() <= 16 && !e.contains(' ') => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    let mut cut = max.saturating_sub(ext.len());
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{ext}", stem[..cut].trim_end())
 }
 
 #[derive(serde::Deserialize)]

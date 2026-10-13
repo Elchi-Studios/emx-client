@@ -39,7 +39,7 @@ mod events;
 mod types;
 pub mod webhook;
 
-pub use client::{idempotency_key, Client, Page};
+pub use client::{disposition_filename, idempotency_key, safe_file_name, Client, Page, FILE_NAME_MAX};
 pub use error::Error;
 pub use events::{Event, Events, Next};
 pub use types::*;
