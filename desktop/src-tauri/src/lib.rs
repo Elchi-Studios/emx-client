@@ -9,7 +9,10 @@
 //! blocking work: a plain command runs on the main thread, and the
 //! window would freeze while it waits.
 
-use emx_sdk::{Changes, Client, Contact, Draft, Error, FullMessage, Mailbox, Me, Message, Page};
+use emx_sdk::{
+    Cancelled, Changes, Client, Contact, Draft, DraftSent, Error, FullMessage, Held, Hold, Mailbox, Me,
+    Message, OnVersion, Page, SavedDraft, Snippets,
+};
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
@@ -85,17 +88,21 @@ type Shared = Mutex<App>;
 
 /// An error the window can show. `retryable` says that the same call may
 /// work in a moment: the network or the service is away, which is not a
-/// reason to sign in again.
+/// reason to sign in again. `retry_after` is the wait in seconds the
+/// service asked for, when it named one.
 #[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct Failure {
     code: String,
     message: String,
     retryable: bool,
+    retry_after: Option<u64>,
 }
 
 impl From<Error> for Failure {
     fn from(e: Error) -> Self {
         let retryable = e.is_retryable();
+        let retry_after = e.retry_after();
         let (code, message) = match &e {
             Error::Api {
                 status: 401, code, ..
@@ -117,8 +124,38 @@ impl From<Error> for Failure {
                 status: 429, code, ..
             } if code == "hourly_limit" => (
                 code.clone(),
-                "This hour's limit of recipients outside your organisation is reached. The message was not sent; send it again later."
+                format!(
+                    "This hour's limit of recipients outside your organisation is reached. The message was not sent; it can go {}.",
+                    wait_words(retry_after)
+                ),
+            ),
+            Error::Api {
+                status: 429, code, ..
+            } if code == "daily_limit" || code == "monthly_limit" => (
+                code.clone(),
+                format!(
+                    "The {} limit of recipients is reached. The message was not sent; it can go {}.",
+                    if code == "daily_limit" { "daily" } else { "organisation's monthly" },
+                    wait_words(retry_after)
+                ),
+            ),
+            Error::Api {
+                status: 400, code, ..
+            } if code == "too_many_recipients" => (
+                code.clone(),
+                "The message has more recipients than one message may have (To, Cc and Bcc together). It was not sent; send it in parts."
                     .into(),
+            ),
+            // A fault on EMX's side while it checks the sign-in or sends:
+            // nothing was done, and the sign-in still holds.
+            Error::Api {
+                status: 503, code, ..
+            } if code == "try_later" => (
+                code.clone(),
+                format!(
+                    "EMX could not do this just now; nothing was done or sent. Try again {}.",
+                    wait_words(retry_after)
+                ),
             ),
             Error::Api { status, code, .. } if retryable && *status >= 500 => (
                 code.clone(),
@@ -130,7 +167,18 @@ impl From<Error> for Failure {
             code,
             message,
             retryable,
+            retry_after,
         }
+    }
+}
+
+/// When something can be done again, as a person says it.
+fn wait_words(secs: Option<u64>) -> String {
+    match secs {
+        None | Some(0) => "later".into(),
+        Some(s @ 1..=90) => format!("in {s} seconds"),
+        Some(s @ 91..=5399) => format!("in {} minutes", s.div_ceil(60)),
+        Some(s) => format!("in about {} hours", s.div_ceil(3600)),
     }
 }
 
@@ -140,6 +188,7 @@ impl From<String> for Failure {
             code: "app".into(),
             message,
             retryable: false,
+            retry_after: None,
         }
     }
 }
@@ -151,6 +200,7 @@ fn signed_out() -> Failure {
         code: "signed_out".into(),
         message: "Not signed in.".into(),
         retryable: false,
+        retry_after: None,
     }
 }
 
@@ -473,6 +523,17 @@ async fn save_part(
     blocking(move || save_new(&dir, &emx_sdk::safe_file_name(&filename, "attachment"), &data)).await
 }
 
+/// Writes a message as received into the Downloads folder, under the
+/// name EMX gives it (its subject and `.eml`), without replacing a file
+/// that is there already. Answers with the path.
+#[tauri::command]
+async fn save_raw(app: AppHandle, state: State<'_, Shared>, account: String, id: String) -> Outcome<String> {
+    let c = client(&state)?;
+    let d = blocking(move || c.raw_download(&account, &id)).await?;
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+    blocking(move || save_new(&dir, &d.file_name("message.eml"), &d.data)).await
+}
+
 /// Writes `data` to `name` in `dir`, or to `name (2)` and so on when
 /// that is taken, and answers the path.
 fn save_new(dir: &std::path::Path, name: &str, data: &[u8]) -> Result<String, String> {
@@ -504,6 +565,90 @@ async fn deliver(c: Client, draft: Draft, key: String) -> Outcome<i64> {
         .recipients)
 }
 
+// --- Drafts, held messages and snippets --------------------------------------
+
+#[tauri::command]
+async fn drafts(state: State<'_, Shared>, account: String) -> Outcome<Vec<SavedDraft>> {
+    let c = client(&state)?;
+    blocking(move || c.drafts(&account)).await
+}
+
+#[tauri::command]
+async fn draft(state: State<'_, Shared>, account: String, id: String) -> Outcome<SavedDraft> {
+    let c = client(&state)?;
+    blocking(move || c.draft(&account, &id)).await
+}
+
+/// Saves a draft on the version it was changed from; a newer version
+/// comes back as the outcome `changed`, a sent draft as `sent`.
+#[tauri::command]
+async fn save_draft(
+    state: State<'_, Shared>,
+    account: String,
+    id: String,
+    version: i64,
+    body: serde_json::Value,
+) -> Outcome<OnVersion<SavedDraft>> {
+    let c = client(&state)?;
+    blocking(move || c.save_draft(&account, &id, version, &body)).await
+}
+
+#[tauri::command]
+async fn delete_draft(
+    state: State<'_, Shared>,
+    account: String,
+    id: String,
+    version: Option<i64>,
+) -> Outcome<OnVersion<()>> {
+    let c = client(&state)?;
+    blocking(move || c.delete_draft(&account, &id, version)).await
+}
+
+/// Sends a saved draft at its version, at once or held for undo or until
+/// a time, with the composer's idempotency key.
+#[tauri::command]
+async fn send_draft(
+    state: State<'_, Shared>,
+    account: String,
+    id: String,
+    version: i64,
+    message: Draft,
+    hold: Hold,
+    idempotency_key: String,
+) -> Outcome<OnVersion<DraftSent>> {
+    let c = client(&state)?;
+    blocking(move || c.send_draft(&account, &id, version, &message, &hold, &idempotency_key)).await
+}
+
+#[tauri::command]
+async fn outbox(state: State<'_, Shared>, account: String) -> Outcome<Vec<Held>> {
+    let c = client(&state)?;
+    blocking(move || c.outbox(&account)).await
+}
+
+#[tauri::command]
+async fn cancel_held(state: State<'_, Shared>, account: String, id: String) -> Outcome<Cancelled> {
+    let c = client(&state)?;
+    blocking(move || c.cancel_held(&account, &id)).await
+}
+
+#[tauri::command]
+async fn reschedule_held(
+    state: State<'_, Shared>,
+    account: String,
+    id: String,
+    send_at: String,
+) -> Outcome<Held> {
+    let c = client(&state)?;
+    blocking(move || c.reschedule_held(&account, &id, &send_at)).await
+}
+
+#[tauri::command]
+async fn snippets(state: State<'_, Shared>, account: String) -> Outcome<Snippets> {
+    let c = client(&state)?;
+    blocking(move || c.snippets(&account)).await
+}
+
 #[tauri::command]
 async fn contacts(state: State<'_, Shared>, account: String, contact_state: String) -> Outcome<Vec<Contact>> {
     let c = client(&state)?;
@@ -528,6 +673,13 @@ async fn set_contact(
 struct ChangeNotice {
     account: String,
     modseq: i64,
+}
+
+/// What the window hears when a draft or a held message of an account
+/// changed.
+#[derive(Serialize, Clone)]
+struct DraftsNotice {
+    account: String,
 }
 
 /// How often a watcher looks whether it should stop, while it waits for
@@ -577,7 +729,9 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>)
                         let _ = app.emit("emx://refused", Failure::from(e));
                         return;
                     }
-                    if !pause(&stop, wait) {
+                    // At least as long as EMX asks, at most five minutes.
+                    let asked = e.retry_after().unwrap_or(0).min(300);
+                    if !pause(&stop, wait.max(asked)) {
                         return;
                     }
                     wait = (wait * 2).min(60);
@@ -597,6 +751,14 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>)
                             ChangeNotice {
                                 account: account.clone(),
                                 modseq,
+                            },
+                        );
+                    }
+                    emx_sdk::Next::Event(emx_sdk::Event::Drafts) => {
+                        let _ = app.emit(
+                            "emx://drafts",
+                            DraftsNotice {
+                                account: account.clone(),
                             },
                         );
                     }
@@ -821,7 +983,17 @@ pub fn run() {
             snooze,
             part,
             save_part,
+            save_raw,
             send,
+            drafts,
+            draft,
+            save_draft,
+            delete_draft,
+            send_draft,
+            outbox,
+            cancel_held,
+            reschedule_held,
+            snippets,
             contacts,
             set_contact,
         ])
@@ -1109,10 +1281,35 @@ mod tests {
             code: "daily_limit".into(),
             message: "the daily sending limit is reached".into(),
             request_id: None,
-            retry_after: None,
+            retry_after: Some(7200),
             replayed: false,
         });
         assert_eq!(daily.code, "daily_limit");
         assert!(!daily.retryable);
+        assert!(daily.message.contains("in about 2 hours"), "{}", daily.message);
+
+        let busy = Failure::from(Error::Api {
+            status: 503,
+            code: "try_later".into(),
+            message: "the server cannot check your sign-in right now".into(),
+            request_id: None,
+            retry_after: Some(5),
+            replayed: false,
+        });
+        assert_eq!(busy.code, "try_later");
+        assert!(busy.retryable, "a fault on EMX's side is no sign-out");
+        assert_eq!(busy.retry_after, Some(5));
+        assert!(busy.message.contains("in 5 seconds"), "{}", busy.message);
+
+        let many = Failure::from(Error::Api {
+            status: 400,
+            code: "too_many_recipients".into(),
+            message: "at most 100".into(),
+            request_id: None,
+            retry_after: None,
+            replayed: false,
+        });
+        assert!(!many.retryable);
+        assert!(many.message.contains("not sent"), "{}", many.message);
     }
 }

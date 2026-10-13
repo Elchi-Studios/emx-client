@@ -4,10 +4,36 @@
 // once per folder and then kept up to date from the change feed, the way
 // the web client does it.
 
-import { emx, describe, refused, type Me, type Mailbox, type Message, type FullMessage } from './emx';
+import { emx, describe, refused, type Me, type Mailbox, type Message, type FullMessage, type SavedDraft, type Held, type FileData } from './emx';
+import { isSealed } from './compose';
 import { appendPage, applyToFolder, applyToResults, deletesForGood, Latest, neighbour, unique, withKeyword } from './list';
 
 export const roleOrder = ['inbox', 'drafts', 'sent', 'archive', 'junk', 'trash'];
+
+/// A file in the composer: its bytes as base64 and its size.
+export interface ComposerFile extends FileData {
+  size: number;
+}
+
+/// What a composer opens with: a new message, a reply, or a draft saved
+/// on EMX, with the version it was loaded at and its body as it was.
+export interface Composing {
+  to?: string;
+  subject?: string;
+  text?: string;
+  inReplyTo?: string;
+  references?: string[];
+  draft?: { id: string; account: string; version: number; body: Record<string, unknown> };
+  files?: ComposerFile[];
+}
+
+/// A message just sent and held for Undo: until when, counted here from
+/// the request, whatever the clocks say.
+export interface Undoable {
+  account: string;
+  id: string;
+  until: number;
+}
 
 class State {
   me = $state<Me | null>(null);
@@ -23,7 +49,16 @@ class State {
   selected = $state<string | null>(null);
   query = $state('');
   searching = $state(false);
-  composing = $state<null | { to?: string; subject?: string; text?: string; inReplyTo?: string; references?: string[] }>(null);
+  composing = $state<null | Composing>(null);
+  // The list pane shows the folders' mail, or the account's Scheduled
+  // messages: held to go later, or failed.
+  view = $state<'mail' | 'scheduled'>('mail');
+  // The account's drafts saved on EMX, shown above the Drafts folder.
+  drafts = $state<SavedDraft[]>([]);
+  held = $state<Held[]>([]);
+  heldLoading = $state(false);
+  // A message just sent that Undo can still take back.
+  undoable = $state<Undoable | null>(null);
   notice = $state('');
   problem = $state('');
   // A question waiting for an answer, such as "Delete for good?". While
@@ -42,7 +77,7 @@ class State {
   private again: Record<string, boolean> = {};
   // What the list shows (a folder, a search) and which message is open:
   // only the answer to the newest request is applied.
-  private view = new Latest();
+  private listing = new Latest();
   private opening = new Latest();
 
   get accounts() {
@@ -107,7 +142,14 @@ class State {
       offRefused();
       return;
     }
-    this.unlisten.push(offChange, offRefused);
+    const offDrafts = await emx.onDrafts((n) => this.onDrafts(n.account));
+    if (mine !== this.signIns) {
+      offChange();
+      offRefused();
+      offDrafts();
+      return;
+    }
+    this.unlisten.push(offChange, offRefused, offDrafts);
     await this.loadMailboxes();
     if (mine !== this.signIns) return;
     try {
@@ -124,7 +166,7 @@ class State {
     this.signedOut = reason;
     this.me = null;
     this.close();
-    this.view.next();
+    this.listing.next();
     this.messages = [];
     this.mailboxes = [];
     this.mailbox = null;
@@ -133,6 +175,10 @@ class State {
     this.composing = null;
     this.asking?.answer(false);
     this.modseq = {};
+    this.view = 'mail';
+    this.drafts = [];
+    this.held = [];
+    this.undoable = null;
     try {
       await emx.signOut();
     } catch {
@@ -151,7 +197,179 @@ class State {
     this.selected = null;
     this.opening.next();
     this.query = '';
+    this.drafts = [];
+    this.held = [];
+    if (!this.mayDraft) this.view = 'mail';
+    if (this.view === 'scheduled') void this.loadHeld();
     await this.loadMailboxes();
+  }
+
+  /// Whether the person may write the open account's drafts: their own,
+  /// or a shared mailbox they may send from.
+  get mayDraft(): boolean {
+    const a = this.accounts.find((x) => x.id === this.account || (this.account === 'me' && x.rights.own));
+    return !!a && (a.rights.own || a.rights.sendAs || a.rights.sendOnBehalf);
+  }
+
+  /// The account id of an address the person sends from: a shared
+  /// mailbox's, or `me` for their own addresses.
+  accountOf(address: string): string {
+    const a = this.accounts.find((x) => x.address.toLowerCase() === address.trim().toLowerCase());
+    return a && !a.rights.own ? a.id : 'me';
+  }
+
+  // --- Drafts and the Scheduled list -----------------------------------------
+
+  /// The account's drafts on EMX, for the Drafts folder.
+  async loadDrafts(): Promise<void> {
+    const account = this.account;
+    if (!this.mayDraft) {
+      this.drafts = [];
+      return;
+    }
+    try {
+      const list = await emx.drafts(account);
+      if (account === this.account) this.drafts = list;
+    } catch (e) {
+      if (account === this.account) this.fail(e);
+    }
+  }
+
+  async loadHeld(): Promise<void> {
+    const account = this.account;
+    this.heldLoading = true;
+    try {
+      const list = await emx.outbox(account);
+      if (account === this.account) this.held = list;
+    } catch (e) {
+      if (account === this.account) this.fail(e);
+    } finally {
+      if (account === this.account) this.heldLoading = false;
+    }
+  }
+
+  showScheduled(): void {
+    this.view = 'scheduled';
+    this.close();
+    void this.loadHeld();
+  }
+
+  /// A draft or a held message of an account changed, here, on another
+  /// device or by a colleague: what shows of them is read again.
+  onDrafts(account: string): void {
+    if (account !== this.account && !(this.account === 'me' && account === this.me?.accounts.find((a) => a.rights.own)?.id)) return;
+    if (this.mailbox?.role === 'drafts') void this.loadDrafts();
+    if (this.view === 'scheduled') void this.loadHeld();
+  }
+
+  /// Opens a saved draft in the composer, as it is on EMX now.
+  async editDraft(d: SavedDraft): Promise<void> {
+    if (isSealed(d.body)) {
+      this.say('This draft is sealed to the mailbox\'s key and opens in the web client.');
+      return;
+    }
+    if (this.composing) {
+      this.say('Close the message being written first.');
+      return;
+    }
+    try {
+      const now = await emx.draft(d.account || this.account, d.id);
+      if (now.sentAt) {
+        this.say(`${now.sentBy?.name ?? 'Somebody'} sent this draft already.`);
+        void this.loadDrafts();
+        return;
+      }
+      this.composing = { draft: { id: now.id, account: now.account || d.account, version: now.version, body: now.body ?? {} } };
+    } catch (e) {
+      this.fail(e);
+    }
+  }
+
+  /// A held or failed message back as a draft, in the composer, with the
+  /// files it held.
+  private reopen(back: { draft: SavedDraft; attachments: FileData[] }, account: string): void {
+    const files = back.attachments.map((f) => ({ ...f, size: Math.floor((f.data.length * 3) / 4) }));
+    this.composing = {
+      draft: { id: back.draft.id, account: back.draft.account || account, version: back.draft.version, body: back.draft.body ?? {} },
+      files
+    };
+  }
+
+  /// Takes a held message back, or puts a failed one away: it is a
+  /// draft again and opens in the composer.
+  async takeBack(h: Held): Promise<void> {
+    if (this.composing) {
+      this.say('Close the message being written first.');
+      return;
+    }
+    try {
+      const back = await emx.cancelHeld(h.account || this.account, h.id);
+      this.reopen(back, h.account || this.account);
+      void this.loadHeld();
+    } catch (e) {
+      if ((e as { code?: string }).code === 'not_found') {
+        this.say('Too late: the message was sent.');
+        void this.loadHeld();
+        return;
+      }
+      this.fail(e);
+    }
+  }
+
+  async reschedule(h: Held, at: Date): Promise<void> {
+    try {
+      const moved = await emx.rescheduleHeld(h.account || this.account, h.id, at.toISOString());
+      this.held = this.held.map((x) => (x.id === h.id ? { ...x, ...moved, message: x.message } : x));
+      this.say(`Will be sent ${new Date(moved.sendAt).toLocaleString()}`);
+    } catch (e) {
+      this.fail(e);
+      void this.loadHeld();
+    }
+  }
+
+  // Ends the Undo note when its time is up.
+  private undoTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /// Offers Undo for a message held `seconds` from `asked`, the moment
+  /// the send was asked for.
+  offerUndo(account: string, id: string, seconds: number, asked: number): void {
+    clearTimeout(this.undoTimer);
+    const until = asked + seconds * 1000;
+    this.undoable = { account, id, until };
+    this.undoTimer = setTimeout(() => {
+      if (this.undoable?.id !== id) return;
+      this.undoable = null;
+      this.say('Sent');
+    }, Math.max(0, until - Date.now()));
+  }
+
+  /// Undo: the message held a moment ago comes back as its draft.
+  async undoSend(): Promise<void> {
+    const u = this.undoable;
+    if (!u) return;
+    clearTimeout(this.undoTimer);
+    this.undoable = null;
+    if (this.composing) {
+      // The message comes back as a draft, to open from Drafts.
+      try {
+        await emx.cancelHeld(u.account, u.id);
+        this.say('Not sent. It is back among the drafts.');
+      } catch (e) {
+        this.undoFailed(e);
+      }
+      return;
+    }
+    try {
+      const back = await emx.cancelHeld(u.account, u.id);
+      this.reopen(back, u.account);
+    } catch (e) {
+      this.undoFailed(e);
+    }
+  }
+
+  private undoFailed(e: unknown): void {
+    if ((e as { code?: string }).code === 'not_found') this.say('Too late: the message was sent.');
+    else this.fail(e);
   }
 
   async loadMailboxes(): Promise<void> {
@@ -171,8 +389,11 @@ class State {
 
   async openMailbox(m: Mailbox | undefined): Promise<void> {
     if (!m) return;
-    const n = this.view.next();
+    const n = this.listing.next();
+    this.view = 'mail';
     this.mailbox = m;
+    if (m.role === 'drafts') void this.loadDrafts();
+    else this.drafts = [];
     this.query = '';
     this.searching = false;
     this.messages = [];
@@ -180,13 +401,13 @@ class State {
     this.loading = true;
     try {
       const page = await emx.messages(this.account, m.id);
-      if (!this.view.is(n)) return;
+      if (!this.listing.is(n)) return;
       this.messages = unique(page.messages);
       this.cursor = page.cursor;
     } catch (e) {
-      if (this.view.is(n)) this.fail(e);
+      if (this.listing.is(n)) this.fail(e);
     } finally {
-      if (this.view.is(n)) this.loading = false;
+      if (this.listing.is(n)) this.loading = false;
     }
   }
 
@@ -194,19 +415,19 @@ class State {
   /// asked for; when the folder changes meanwhile, it is dropped.
   async more(): Promise<void> {
     if (!this.cursor || this.loading || this.searching || !this.mailbox) return;
-    const n = this.view.current;
+    const n = this.listing.current;
     this.loading = true;
     try {
       const page = this.query
         ? await emx.search(this.account, this.query, this.cursor)
         : await emx.messages(this.account, this.mailbox.id, this.cursor);
-      if (!this.view.is(n)) return;
+      if (!this.listing.is(n)) return;
       this.messages = appendPage(this.messages, page.messages);
       this.cursor = page.cursor;
     } catch (e) {
-      if (this.view.is(n)) this.fail(e);
+      if (this.listing.is(n)) this.fail(e);
     } finally {
-      if (this.view.is(n)) this.loading = false;
+      if (this.listing.is(n)) this.loading = false;
     }
   }
 
@@ -215,20 +436,20 @@ class State {
       await this.openMailbox(this.mailbox ?? undefined);
       return;
     }
-    const n = this.view.next();
+    const n = this.listing.next();
     this.query = q;
     this.cursor = '';
     this.searching = true;
     this.loading = false;
     try {
       const found = await emx.search(this.account, q);
-      if (!this.view.is(n)) return;
+      if (!this.listing.is(n)) return;
       this.messages = unique(found.messages);
       this.cursor = found.cursor;
     } catch (e) {
-      if (this.view.is(n)) this.fail(e);
+      if (this.listing.is(n)) this.fail(e);
     } finally {
-      if (this.view.is(n)) this.searching = false;
+      if (this.listing.is(n)) this.searching = false;
     }
   }
 

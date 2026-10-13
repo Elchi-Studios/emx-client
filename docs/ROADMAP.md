@@ -4,7 +4,8 @@ Rough order. Nothing here is a promise with a date.
 
 ## Desktop
 
-- Drafts kept between sessions, through the API's drafts.
+- Writing a shared draft together live, as the web client does.
+- The calendar, from the SDK's calendar calls.
 - The token in the system keychain instead of a file.
 - System notifications for new mail, from the change feed.
 - A tray icon with the unread count.

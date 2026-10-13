@@ -6,6 +6,7 @@
   import MessageList from './MessageList.svelte';
   import MessageView from './MessageView.svelte';
   import Composer from './Composer.svelte';
+  import Scheduled from './Scheduled.svelte';
 
   // Keys, when nothing is being typed or chosen, and no composer or
   // question is open over the list: a key meant for those must not act
@@ -98,7 +99,7 @@
 
 <div class="shell">
   <Sidebar onsignout={signOut} />
-  <MessageList />
+  {#if app.view === 'scheduled'}<Scheduled />{:else}<MessageList />{/if}
   <MessageView onreply={reply} />
 </div>
 

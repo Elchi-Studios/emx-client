@@ -41,6 +41,19 @@ to a PEM file of the authorities to trust instead, as for `emx`.
 The window opens where it was and as large as it was when it last
 closed, as long as that is still on a screen.
 
+Drafts are kept on EMX. The Drafts folder lists the drafts being
+written above its own messages, a shared mailbox's with who wrote and
+who changed them; Save draft (`Ctrl+S`) saves one on the version it was
+opened at, and a colleague's change made meanwhile is shown and asked
+about instead of being written over. There is no writing together live
+here; the web client does that. Send holds the message on EMX for the
+seconds set in the web client (Settings, Sending, ten unless changed),
+with Undo in a note for exactly that long; Send later holds it until a
+time, and Scheduled lists what waits and what failed, to move or take
+back. `;;` and the first letters of a snippet's name, or the Snippets
+button, insert a snippet, with the first recipient's name and yours
+filled in. Save as file saves a message as received, under its subject.
+
 Keys: `j` `k` move, `e` archive, `#` or `Delete` trash, `u` read or
 unread, `s` flag, `r` reply, `a` reply all, `c` new message, `/` search,
 `Esc` close. They do nothing while the composer is open. In Trash,
@@ -50,8 +63,11 @@ written in it asks before the text is thrown away.
 ## What is not here yet
 
 Sealed mailboxes open in the web client only, because the key lives
-there. Drafts are not saved between sessions. Notifications from the
-system tray and a keychain for the token are next.
+there, and so do their drafts: a sealed mailbox's own messages go at
+once from here, without Undo or Send later. Files added to a draft stay
+in the composer, as in the web client; a draft on EMX keeps its text.
+The calendar is in the web client. Notifications from the system tray
+and a keychain for the token are next.
 
 GNU Affero General Public License 3.0. The crates and packages the app
 is built from are under their own licences, and their notices go with

@@ -17,12 +17,19 @@
   {/if}
   <nav>
     {#each app.mailboxes as m (m.id)}
-      <button class="box" class:on={app.mailbox?.id === m.id && !app.query} onclick={() => app.openMailbox(m)}>
+      <button class="box" class:on={app.view === 'mail' && app.mailbox?.id === m.id && !app.query} onclick={() => app.openMailbox(m)}>
         <span class="icon">{icons[m.role] ?? icons['']}</span>
         <span class="name">{m.name}</span>
         {#if m.unseen > 0}<span class="count">{m.unseen}</span>{/if}
       </button>
     {/each}
+    {#if app.mayDraft}
+      <button class="box" class:on={app.view === 'scheduled'} onclick={() => app.showScheduled()} title="Messages held to go later, and those that could not go">
+        <span class="icon">◷</span>
+        <span class="name">Scheduled</span>
+        {#if app.view === 'scheduled' && app.held.some((h) => h.state === 'failed')}<span class="count warn">!</span>{/if}
+      </button>
+    {/if}
   </nav>
   <div class="grow"></div>
   <div class="me">
@@ -90,6 +97,10 @@
     border-radius: 9px;
     background: var(--accent-soft);
     color: var(--accent);
+  }
+  .count.warn {
+    background: var(--warn);
+    color: #fff;
   }
   .grow {
     flex: 1;

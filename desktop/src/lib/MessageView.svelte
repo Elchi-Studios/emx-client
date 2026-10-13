@@ -61,6 +61,17 @@
     build(openId, openHtml, true);
   }
 
+  /// The message as received, saved to Downloads under the name EMX
+  /// gives it: its subject and `.eml`.
+  async function saveMessage(): Promise<void> {
+    try {
+      const path = await emx.saveRaw(app.account, app.open!.message.id);
+      app.say(`Saved to ${path}`);
+    } catch (e) {
+      app.fail(e);
+    }
+  }
+
   async function save(part: string, filename: string): Promise<void> {
     try {
       const path = await emx.savePart(app.account, app.open!.message.id, part, filename);
@@ -98,6 +109,7 @@
         <button class="btn sm" onclick={() => app.trash(m)}>{app.forGood(m) ? 'Delete' : 'Trash'}</button>
         <button class="btn quiet sm" onclick={() => app.toggleFlag(m)}>{m.keywords.includes('$flagged') ? 'Unflag' : 'Flag'}</button>
         <button class="btn quiet sm" onclick={() => app.toggleSeen(m)}>{m.keywords.includes('$seen') ? 'Mark unread' : 'Mark read'}</button>
+        <button class="btn quiet sm" onclick={saveMessage} title="Save the message as received to Downloads">Save as file</button>
         {#if m.dmarc === 'fail'}<span class="warn small">DMARC failed: the sender may not be who it says</span>{/if}
       </div>
     </header>

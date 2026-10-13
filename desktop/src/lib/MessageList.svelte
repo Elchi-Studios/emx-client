@@ -1,6 +1,17 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script lang="ts">
   import { app, when } from '$lib/state.svelte';
+  import { fieldsOf, isSealed } from '$lib/compose';
+  import type { SavedDraft } from '$lib/emx';
+
+  // Who wrote a draft and who changed it last, when that was somebody
+  // else: a shared mailbox's drafts are written together.
+  function draftBy(d: SavedDraft): string {
+    const by = d.createdBy?.name ?? '';
+    const edited = d.editedBy?.name ?? '';
+    if (edited && edited !== by) return by ? `by ${by}, changed by ${edited}` : `changed by ${edited}`;
+    return by ? `by ${by}` : '';
+  }
 
   let q = $state('');
   let timer: ReturnType<typeof setTimeout>;
@@ -42,6 +53,23 @@
   <div class="list" onscroll={scrolled} bind:this={rows}>
     {#if app.query}
       <p class="muted small pad">{app.searching ? 'Searching' : `${app.messages.length}${app.cursor ? '+' : ''} found for "${app.query}"`}</p>
+    {:else if app.mailbox?.role === 'drafts' && app.drafts.length}
+      <p class="muted small heading">Being written</p>
+      {#each app.drafts as d (d.id)}
+        {@const f = fieldsOf(d.body)}
+        <button class="row" onclick={() => app.editDraft(d)}>
+          <span class="dot"></span>
+          <span class="body">
+            <span class="line">
+              <span class="who">{isSealed(d.body) ? 'Sealed draft' : f.to || '(no recipient)'}</span>
+              <span class="time muted small">{when(d.updatedAt)}</span>
+            </span>
+            <span class="subject">{isSealed(d.body) ? 'Opens in the web client' : f.subject || '(no subject)'}</span>
+            <span class="snippet muted small">{draftBy(d)}</span>
+          </span>
+        </button>
+      {/each}
+      <p class="muted small heading">In the folder</p>
     {/if}
     {#each app.messages as m (m.id)}
       {@const unseen = !m.keywords.includes('$seen')}
@@ -84,6 +112,12 @@
   .pad {
     padding: 12px;
     margin: 0;
+  }
+  .heading {
+    margin: 0;
+    padding: 8px 12px 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
   .row {
     display: flex;

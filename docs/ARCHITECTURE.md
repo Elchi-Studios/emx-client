@@ -69,12 +69,21 @@ and reconnects quietly, with a growing pause when the service is away.
   folder and the `Client` in managed state. Each command the window can
   call is a function with `#[tauri::command]`; the window gets records,
   never the token. On sign-in one thread per account follows the event
-  stream and emits `emx://change` with the modseq.
+  stream and emits `emx://change` with the modseq, and `emx://drafts`
+  when one of the account's drafts or held messages changed.
 - The window (`src/lib/state.svelte.ts`) is one state object. A folder is
   loaded once; a change notice makes it ask for changes since the last
   modseq it handled and fold them in. Notices during a fetch are
   coalesced. `reload` from the service means the state is too old and
   the lists are loaded again.
+- The composer saves a draft on EMX on the version it was opened at
+  and sends it from there, held for Undo or until a time; a draft that
+  changed meanwhile comes back with the newer version, which is shown
+  and asked about. `src/lib/compose.ts` is what the composer works out
+  without Svelte (the body saved, the send's key, the times Send later
+  offers, snippets) and is tested with `npm test`. A send's key stays
+  while the request stays the same and is new for a changed one, as
+  EMX refuses a key with another request.
 - Message HTML is sanitised by the service (no scripts, no remote loads,
   remote images in `data-src`) and shown in a frame with `sandbox`.
   Inline images point at the part endpoint; the window fetches them

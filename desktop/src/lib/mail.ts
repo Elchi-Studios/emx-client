@@ -178,6 +178,12 @@ export function formatRecipient(name: string, address: string): string {
 /// commas; display names that need it are quoted. Anything it does not
 /// recognise is left for the service to judge.
 export function normalizeRecipients(field: string): string {
+  return recipientList(field).join(', ');
+}
+
+/// The recipients of a To, Cc or Bcc field as typed, one each, as
+/// [`normalizeRecipients`] writes them.
+export function recipientList(field: string): string[] {
   const pieces: string[] = [];
   let cur = '';
   let quoted = false;
@@ -214,5 +220,10 @@ export function normalizeRecipients(field: string): string {
     if (words.length > 1 && words.every((w) => /^[^\s@<>"]+@[^\s@<>"]+$/.test(w))) out.push(...words);
     else out.push(p);
   }
-  return out.join(', ');
+  return out;
+}
+
+/// How many recipients the fields name together, each address once.
+export function countRecipients(...fields: string[]): number {
+  return new Set(fields.flatMap(recipientList).map(bareAddress)).size;
 }

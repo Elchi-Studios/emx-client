@@ -131,6 +131,11 @@ impl Transport for Limited {
 pub enum Event {
     /// Something changed; ask for changes since the modseq you had.
     Change { modseq: i64 },
+    /// One of the account's drafts was saved, sent or deleted, or one of
+    /// its held messages was held, taken back, sent or failed: read the
+    /// drafts and the held messages again. Sent to those who may write
+    /// the account's drafts.
+    Drafts,
     /// An event of a kind this version does not know, with its data.
     Other { name: String, data: String },
 }
@@ -318,6 +323,9 @@ fn parse(name: &str, data: &str) -> Event {
             .unwrap_or(0);
         return Event::Change { modseq };
     }
+    if name == "drafts" {
+        return Event::Drafts;
+    }
     Event::Other {
         name: name.to_string(),
         data: data.to_string(),
@@ -330,9 +338,10 @@ mod tests {
 
     #[test]
     fn reads_events_and_skips_keepalives() {
-        let feed = ": keepalive\n\nevent: change\ndata: {\"modseq\": 812}\n\n: keepalive\n\nevent: hello\ndata: a\ndata: b\n\n";
+        let feed = ": keepalive\n\nevent: change\ndata: {\"modseq\": 812}\n\n: keepalive\n\nevent: drafts\ndata: {}\n\nevent: hello\ndata: a\ndata: b\n\n";
         let mut ev = Events::with_idle(Box::new(std::io::Cursor::new(feed.as_bytes().to_vec())), IDLE);
         assert_eq!(ev.next().unwrap().unwrap(), Event::Change { modseq: 812 });
+        assert_eq!(ev.next().unwrap().unwrap(), Event::Drafts);
         assert_eq!(
             ev.next().unwrap().unwrap(),
             Event::Other {

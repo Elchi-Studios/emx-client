@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- The desktop app keeps drafts on EMX: the Drafts folder lists those
+  being written, a shared mailbox's with who wrote and changed them,
+  and opens them to change and send; a save, a deletion or a send on a
+  version a colleague changed meanwhile shows their version and asks,
+  and a draft somebody sent closes. Send holds the message for the
+  seconds set in the web client with Undo in a note, Send later holds
+  it until later today, tomorrow morning, Monday morning or a time
+  picked, and Scheduled lists what waits and what failed, to move or
+  take back as a draft with its files. `;;` or the Snippets button
+  inserts a snippet with the recipient's and the sender's names. Save
+  as file saves a message as received under its subject. A send keeps
+  its idempotency key only while the message stays the same, so that a
+  changed message is no longer refused with `idempotency_mismatch` or
+  answered with the refusal of the first. More recipients than a
+  message may have are refused before sending. `503 try_later` says
+  nothing was done and keeps the sign-in, the limits say when the
+  message can go, and the account's stream waits as long as EMX asks.
+  The SDK reads the stream's `drafts` event as `Event::Drafts`.
 - The SDK reaches the calendars: `calendars`, `occurrences` in a range
   with recurring events expanded, `event`, `create_event`,
   `update_event` and `delete_event` for one occurrence, the following

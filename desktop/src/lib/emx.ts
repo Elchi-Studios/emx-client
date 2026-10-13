@@ -40,8 +40,9 @@ export interface Me {
   accounts: Account[];
   sendFrom: SendFrom[];
   prefs: Record<string, unknown>;
-  /** What the person may send; `maxMessageBytes` is the whole message. */
-  limits?: { maxMessageBytes?: number };
+  /** What the person may send; `maxMessageBytes` is the whole message,
+      `maxRecipients` To, Cc and Bcc of one message together. */
+  limits?: { maxMessageBytes?: number; maxRecipients?: number; hourlyRecipients?: number };
 }
 export interface Mailbox {
   id: string;
@@ -117,6 +118,75 @@ export interface Failure {
   message: string;
   /** The same call may work in a moment: the network or EMX is away. */
   retryable?: boolean;
+  /** The seconds EMX asked to wait, when it named them. */
+  retryAfter?: number | null;
+}
+
+export interface Person {
+  id: string;
+  name: string;
+}
+/// A draft saved on EMX. Its body is the composer's own JSON; a shared
+/// mailbox's drafts are written by everyone who may send from it.
+export interface SavedDraft {
+  id: string;
+  account: string;
+  version: number;
+  body: Record<string, unknown>;
+  createdAt?: string | null;
+  createdBy?: Person | null;
+  updatedAt: string;
+  editedBy?: Person | null;
+  sentAt?: string | null;
+  sentBy?: Person | null;
+}
+/// What a change of a draft made on a version came to: done, or refused
+/// with the draft as it is now because somebody changed or sent it.
+export type OnVersion<T> =
+  | { outcome: 'done'; value: T }
+  | { outcome: 'changed'; value: SavedDraft }
+  | { outcome: 'sent'; value: SavedDraft };
+/// How a send holds its message on EMX: seconds for Undo, or a time.
+export interface Hold {
+  undoSeconds?: number;
+  sendAt?: string;
+  remindDays?: number;
+}
+/// A message held on EMX: to be taken back for a few seconds, or until a
+/// time. One that could not go is `failed`, and its draft a draft again.
+export interface Held {
+  id: string;
+  draft: string;
+  account: string;
+  kind: 'undo' | 'later' | string;
+  sendAt: string;
+  state: 'held' | 'failed' | string;
+  errorCode: string;
+  errorMessage: string;
+  createdAt: string;
+  sender: Person;
+  message?: SavedDraft | null;
+}
+export interface DraftSent {
+  sent: boolean;
+  recipients: number;
+  held: boolean;
+  outbox?: Held | null;
+  replayed: boolean;
+}
+export interface FileData {
+  filename: string;
+  contentType: string;
+  data: string;
+}
+export interface Cancelled {
+  draft: SavedDraft;
+  attachments: FileData[];
+}
+export interface Snippet {
+  id: string;
+  account: string;
+  body: Record<string, unknown>;
 }
 
 /// A new idempotency key: 128 random bits. EMX answers a send with a key
@@ -135,6 +205,8 @@ export function describe(e: unknown): string {
 /// Whether EMX no longer takes the sign-in: the token expired or was
 /// revoked. Only signing in again helps.
 export function refused(e: unknown): boolean {
+  // Only a 401 is: `try_later`, EMX failing to check the sign-in for a
+  // moment, is no sign-out.
   const code = e && typeof e === 'object' ? (e as Failure).code : '';
   return code === 'bad_token' || code === 'signed_out';
 }
@@ -199,11 +271,29 @@ export const emx = {
   savePart: (account: string, id: string, part: string, filename: string) =>
     invoke<string>('save_part', { account, id, part, filename }),
   send: (draft: Draft, idempotencyKey: string) => invoke<number>('send', { draft, idempotencyKey }),
+  /// The message as received, saved to Downloads under the name EMX
+  /// gives it.
+  saveRaw: (account: string, id: string) => invoke<string>('save_raw', { account, id }),
+  drafts: (account: string) => invoke<SavedDraft[]>('drafts', { account }),
+  draft: (account: string, id: string) => invoke<SavedDraft>('draft', { account, id }),
+  saveDraft: (account: string, id: string, version: number, body: Record<string, unknown>) =>
+    invoke<OnVersion<SavedDraft>>('save_draft', { account, id, version, body }),
+  deleteDraft: (account: string, id: string, version: number | null) =>
+    invoke<OnVersion<null>>('delete_draft', { account, id, version }),
+  sendDraft: (account: string, id: string, version: number, message: Draft, hold: Hold, idempotencyKey: string) =>
+    invoke<OnVersion<DraftSent>>('send_draft', { account, id, version, message, hold, idempotencyKey }),
+  outbox: (account: string) => invoke<Held[]>('outbox', { account }),
+  cancelHeld: (account: string, id: string) => invoke<Cancelled>('cancel_held', { account, id }),
+  rescheduleHeld: (account: string, id: string, sendAt: string) => invoke<Held>('reschedule_held', { account, id, sendAt }),
+  snippets: (account: string) => invoke<{ snippets: Snippet[]; editable: boolean }>('snippets', { account }),
   contacts: (account: string, state: string) => invoke('contacts', { account, contactState: state }),
   setContact: (account: string, address: string, state: string) =>
     invoke<void>('set_contact', { account, address, contactState: state }),
   onChange: (fn: (n: { account: string; modseq: number }) => void): Promise<UnlistenFn> =>
     listen<{ account: string; modseq: number }>('emx://change', (e) => fn(e.payload)),
+  /// A draft or a held message of an account changed: read them again.
+  onDrafts: (fn: (n: { account: string }) => void): Promise<UnlistenFn> =>
+    listen<{ account: string }>('emx://drafts', (e) => fn(e.payload)),
   /// The app stopped following an account because EMX refused it.
   onRefused: (fn: (f: Failure) => void): Promise<UnlistenFn> => listen<Failure>('emx://refused', (e) => fn(e.payload))
 };

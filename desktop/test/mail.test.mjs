@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bareAddress, encodedSize, fits, formatRecipient, frame, htmlToText, normalizeRecipients, quotable, replyRecipients, replySubject } from '../src/lib/mail.ts';
+import { bareAddress, countRecipients, encodedSize, fits, formatRecipient, frame, htmlToText, normalizeRecipients, quotable, replyRecipients, replySubject } from '../src/lib/mail.ts';
 
 test('own addresses are matched whole, in any case', () => {
   const m = { from: 'anna@example.ch', to: ['s@x.ch', 'lukas@x.ch'], cc: ['S@X.CH', 'info@x.ch'], replyTo: [] };
@@ -91,4 +91,10 @@ test('recipients are written the way the service reads them', () => {
   // Something it does not recognise goes as typed, for the service to judge.
   assert.equal(normalizeRecipients('not an address'), 'not an address');
   assert.equal(formatRecipient('', 'a@b.ch'), 'a@b.ch');
+});
+
+test('recipients are counted across the fields, each once', () => {
+  assert.equal(countRecipients('Anna <anna@x.ch>; marco@x.ch', 'ANNA@x.ch', '"Muster, Hans" <h@x.ch>'), 3);
+  assert.equal(countRecipients('', ''), 0);
+  assert.equal(countRecipients('a@x.ch b@x.ch'), 2);
 });

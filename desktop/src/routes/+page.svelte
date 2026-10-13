@@ -73,6 +73,16 @@
     resume();
     return () => clearTimeout(timer);
   });
+
+  // The seconds left to take back the message just sent.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!app.undoable) return;
+    now = Date.now();
+    const tick = setInterval(() => (now = Date.now()), 250);
+    return () => clearInterval(tick);
+  });
+  const left = $derived(app.undoable ? Math.max(0, Math.ceil((app.undoable.until - now) / 1000)) : 0);
 </script>
 
 <svelte:window ononline={online} />
@@ -89,10 +99,25 @@
 
 {#if app.asking}<Confirm />{/if}
 
-{#if app.notice}<div class="toast">{app.notice}</div>{/if}
+{#if app.undoable}
+  <div class="toast undo" role="status">
+    Sending in {left}s
+    <button class="btn sm" onclick={() => app.undoSend()}>Undo</button>
+  </div>
+{:else if app.notice}<div class="toast">{app.notice}</div>{/if}
 {#if app.problem}<div class="toast problem">{app.problem}</div>{/if}
 
 <style>
+  .toast.undo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .toast.undo .btn {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #111;
+  }
   .center {
     height: 100vh;
     display: grid;
