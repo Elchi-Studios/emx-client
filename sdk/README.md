@@ -31,6 +31,29 @@ fn main() -> Result<(), emx_sdk::Error> {
 }
 ```
 
+Send later, or with time to take it back: the message is saved as a
+draft and held on the server, which sends it when its time comes
+whether anybody is signed in or not.
+
+```rust,no_run
+use emx_sdk::{idempotency_key, Client, Draft, Hold, ME};
+
+fn send_tomorrow(emx: &Client, draft: &Draft) -> Result<(), emx_sdk::Error> {
+    let hold = Hold { send_at: Some("2026-10-14T07:00:00Z".into()), ..Default::default() };
+    let sent = emx.send_held(ME, draft, &hold, &idempotency_key())?;
+    let held = sent.outbox.expect("held");
+    // Changed my mind:
+    emx.cancel_held(&held.account, &held.id)?;
+    Ok(())
+}
+```
+
+Drafts of a shared mailbox are written by everyone who may send from
+it, with versions: `save_draft`, `delete_draft` and `send_draft` name
+the version a change was made on, and answer `OnVersion::Changed` with
+the newer draft when a colleague saved meanwhile, or `OnVersion::Sent`
+when somebody sent it, instead of overwriting their work.
+
 Live updates: the stream says that something changed, and `changes`
 says what. A new stream starts by announcing the current modseq, so
 one that is not above the last handled needs no call.

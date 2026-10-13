@@ -696,3 +696,273 @@ pub struct EventAccount {
     #[serde(default)]
     pub id: String,
 }
+
+// --- Drafts, held messages and snippets ------------------------------------
+
+/// Who wrote, changed or sent a draft, or held a message.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct Person {
+    pub id: String,
+    pub name: String,
+}
+
+/// A draft saved on the server: what a composer holds, so that a message
+/// begun on one device is finished on another, and a draft of a shared
+/// mailbox is written by everyone who may send from it.
+///
+/// `body` is the composer's own JSON object, at most 1 MB. The web client
+/// writes `from`, `to`, `cc`, `bcc`, `subject`, `text`, `inReplyTo` and
+/// `references`, and fields of its own beside them, which a program that
+/// changes a draft keeps as they are; [`SavedDraft::fields`] reads the
+/// common ones. A sealed mailbox's own drafts are `{"sealed": "..."}`,
+/// readable in the web client only.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedDraft {
+    pub id: String,
+    /// The account it belongs to: the person's own, or the shared
+    /// mailbox its From address belongs to.
+    #[serde(default)]
+    pub account: String,
+    /// Each save makes a new version; a change is saved on the version
+    /// it was made on, and refused when that is no longer the newest.
+    #[serde(default)]
+    pub version: i64,
+    #[serde(default)]
+    pub body: serde_json::Value,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub created_by: Option<Person>,
+    #[serde(default)]
+    pub updated_at: String,
+    #[serde(default)]
+    pub edited_by: Option<Person>,
+    /// Set for an hour after the draft was sent, or while its message is
+    /// held (see [`Held`]).
+    #[serde(default)]
+    pub sent_at: Option<String>,
+    #[serde(default)]
+    pub sent_by: Option<Person>,
+}
+
+/// The fields of a draft's body most programs read.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DraftFields {
+    pub from: String,
+    pub to: String,
+    pub cc: String,
+    pub bcc: String,
+    pub subject: String,
+    pub text: String,
+    pub in_reply_to: String,
+    pub references: Vec<String>,
+    /// The body is sealed to the mailbox's key, and the fields above are
+    /// empty.
+    #[serde(skip_deserializing)]
+    pub sealed: bool,
+}
+
+impl SavedDraft {
+    /// The common fields of the body; empty where the body has none or
+    /// another type, and all of them for a sealed draft.
+    pub fn fields(&self) -> DraftFields {
+        if self.body.get("sealed").is_some_and(|v| v.is_string()) {
+            return DraftFields {
+                sealed: true,
+                ..Default::default()
+            };
+        }
+        let text = |k: &str| {
+            self.body
+                .get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        DraftFields {
+            from: text("from"),
+            to: text("to"),
+            cc: text("cc"),
+            bcc: text("bcc"),
+            subject: text("subject"),
+            text: text("text"),
+            in_reply_to: text("inReplyTo"),
+            references: self
+                .body
+                .get("references")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|r| r.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            sealed: false,
+        }
+    }
+}
+
+impl Draft {
+    /// The body to save this message as a draft under: its fields as the
+    /// web client writes them, without the files, which a draft does not
+    /// keep and which go with the send.
+    pub fn draft_body(&self) -> serde_json::Value {
+        let mut v = serde_json::to_value(Draft {
+            attachments: Vec::new(),
+            forward_parts: Vec::new(),
+            headers: BTreeMap::new(),
+            ..self.clone()
+        })
+        .unwrap_or_else(|_| serde_json::json!({}));
+        if let Some(m) = v.as_object_mut() {
+            // Written even when empty, as the web client writes them.
+            for k in ["cc", "bcc", "text"] {
+                m.entry(k)
+                    .or_insert_with(|| serde_json::Value::String(String::new()));
+            }
+        }
+        v
+    }
+}
+
+/// What a change, a deletion or a send of a draft made on a version came
+/// to. Nobody overwrites what a colleague wrote meanwhile without seeing
+/// it: a call made on a version that is no longer the newest is refused
+/// with the newer draft, to merge or to show.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "outcome", content = "value", rename_all = "camelCase")]
+pub enum OnVersion<T> {
+    /// Done.
+    Done(T),
+    /// The draft changed since the version named (`409 conflict`): this
+    /// is the newer one. Save again on its version to keep a change.
+    Changed(SavedDraft),
+    /// Somebody sent the draft already (`409 sent`): `sent_by` says who.
+    Sent(SavedDraft),
+}
+
+impl<T> OnVersion<T> {
+    /// The same outcome with the value when done made into another.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> OnVersion<U> {
+        match self {
+            OnVersion::Done(v) => OnVersion::Done(f(v)),
+            OnVersion::Changed(d) => OnVersion::Changed(d),
+            OnVersion::Sent(d) => OnVersion::Sent(d),
+        }
+    }
+
+    /// The value when done, else `None`.
+    pub fn done(self) -> Option<T> {
+        match self {
+            OnVersion::Done(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+/// How the send of a draft holds its message on the server instead of
+/// sending it at once, and whether it asks to be reminded. The default
+/// sends at once.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Hold {
+    /// Holds the message this many seconds, 1 to 30, so that it can be
+    /// taken back with [`crate::Client::cancel_held`] (undo send).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo_seconds: Option<u32>,
+    /// Holds the message until then, RFC 3339, within a year (send
+    /// later). Not together with `undo_seconds`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_at: Option<String>,
+    /// When nothing arrived in the conversation within this many days, 1
+    /// to 60, a copy of the message comes back to the top of the inbox,
+    /// unread and with the keyword `$followup`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remind_days: Option<u32>,
+}
+
+/// The answer to the send of a draft: sent at once, or held.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DraftSent {
+    pub sent: bool,
+    pub recipients: i64,
+    /// The message is held on the server (`202`), as `outbox` describes.
+    pub held: bool,
+    pub outbox: Option<Held>,
+    /// The answer kept under the send's `Idempotency-Key`, given again.
+    pub replayed: bool,
+}
+
+/// A message held on the server: to be taken back for a few seconds
+/// (`undo`), or until a time (`later`). One that could not go when its
+/// time came is `failed`, with why, and its draft is a draft again.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Held {
+    pub id: String,
+    /// The draft it was sent from.
+    pub draft: String,
+    pub account: String,
+    /// `undo` or `later`.
+    pub kind: String,
+    /// When it goes, RFC 3339.
+    pub send_at: String,
+    /// `held` or `failed`.
+    pub state: String,
+    pub error_code: String,
+    pub error_message: String,
+    pub created_at: String,
+    /// Who held it; it goes as them, with their rights then.
+    pub sender: Person,
+    pub remind_days: i64,
+    /// The draft, which says what the message is; in the list of held
+    /// messages only.
+    pub message: Option<SavedDraft>,
+}
+
+/// A held message taken back: its draft, a draft again in a new version,
+/// and the files the message held, which a draft does not keep.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Cancelled {
+    pub draft: SavedDraft,
+    pub attachments: Vec<DraftAttachment>,
+}
+
+/// Text a composer inserts by name. Its body is `{"name", "text"}`, or
+/// `{"sealed": "..."}` for a sealed mailbox's own.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Snippet {
+    pub id: String,
+    pub account: String,
+    pub body: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl Snippet {
+    /// Its name; empty when it is sealed.
+    pub fn name(&self) -> &str {
+        self.body.get("name").and_then(|v| v.as_str()).unwrap_or("")
+    }
+
+    /// Its text; empty when it is sealed.
+    pub fn text(&self) -> &str {
+        self.body.get("text").and_then(|v| v.as_str()).unwrap_or("")
+    }
+
+    /// Sealed to the mailbox's key, and readable in the web client only.
+    pub fn is_sealed(&self) -> bool {
+        self.body.get("sealed").is_some()
+    }
+}
+
+/// An account's snippets, oldest first, and whether the person may
+/// change them: their own, or a shared mailbox's they manage.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Snippets {
+    pub snippets: Vec<Snippet>,
+    pub editable: bool,
+}

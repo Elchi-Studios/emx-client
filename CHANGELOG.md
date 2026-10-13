@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The SDK reaches the drafts saved on the server, a shared mailbox's
+  among them, with their versions (`drafts`, `draft`, `save_draft`,
+  `delete_draft`, `send_draft`), where a change on an older version or
+  of a draft sent meanwhile answers `OnVersion::Changed` or
+  `OnVersion::Sent` with the draft as it is; holds a message on the
+  server for undo send or until a time (`Hold`, `send_held`), lists the
+  held and failed ones (`outbox`), moves and takes them back
+  (`reschedule_held`, `cancel_held`, which gives the draft and its
+  files back); and reads and keeps snippets (`snippets`,
+  `save_snippet`, `delete_snippet`).
 - Webhooks know `complaint.received`, the event for an abuse report
   (RFC 5965) about a message the account sent: the SDK reads it, with
   `message.received`, `delivery.failed` and `ping`, as

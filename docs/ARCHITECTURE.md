@@ -32,6 +32,11 @@ cli                                                             ──▶  emx-s
   transfer that breaks goes on with a `Range` of the same version
   (`If-Range`), and a raw source is checked against the SHA-256 the
   service gives as its `ETag`.
+- `drafts.rs` is the drafts saved on the server with versions, messages
+  held there (undo send, send later, the Scheduled list) and snippets.
+  A change of a draft made on an older version comes back as
+  `OnVersion::Changed` with the newer draft rather than as an error, so
+  that a client shows or merges it.
 - `types.rs` is the records, with serde. Every optional field defaults,
   and unknown fields are ignored, because the service adds fields and
   never removes one.

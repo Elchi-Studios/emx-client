@@ -34,12 +34,14 @@
 //! The reference for every call is at <https://docs.elchi.dev/emx-api>.
 
 mod client;
+mod drafts;
 mod error;
 mod events;
 mod types;
 pub mod webhook;
 
 pub use client::{disposition_filename, idempotency_key, safe_file_name, Client, Page, FILE_NAME_MAX};
+pub use drafts::new_draft_id;
 pub use error::Error;
 pub use events::{Event, Events, Next};
 pub use types::*;

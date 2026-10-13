@@ -1053,3 +1053,288 @@ fn a_broken_download_goes_on_where_it_broke() {
         seen[1]
     );
 }
+
+const SAVED: &str = r#"{"id":"d1","account":"s1","version":4,"body":{"from":"contact@elchi.dev","to":"anna@example.ch","subject":"Offerte","text":"Gerne.","answers":"x9"},
+  "createdAt":"2026-10-13T07:00:00Z","createdBy":{"id":"u1","name":"Samuel Krauss"},"updatedAt":"2026-10-13T07:05:00Z","editedBy":{"id":"u2","name":"Anna Beispiel"}}"#;
+
+fn leak(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+#[test]
+fn shared_drafts_with_versions() {
+    let (base, seen) = server(vec![
+        (200, leak(format!(r#"{{"drafts":[{SAVED}]}}"#))),
+        (200, leak(format!(r#"{{"draft":{SAVED}}}"#))),
+        (200, leak(format!(r#"{{"draft":{}}}"#, SAVED.replace(r#""version":4"#, r#""version":5"#)))),
+        (
+            409,
+            leak(format!(
+                r#"{{"error":{{"code":"conflict","message":"the draft changed meanwhile; this is the newer version"}},"draft":{}}}"#,
+                SAVED.replace(r#""version":4"#, r#""version":6"#)
+            )),
+        ),
+        (
+            409,
+            leak(format!(
+                r#"{{"error":{{"code":"sent","message":"the draft was sent already"}},"draft":{}}}"#,
+                SAVED.replace(r#""version":4"#, r#""version":6,"sentAt":"2026-10-13T07:06:00Z","sentBy":{"id":"u2","name":"Anna Beispiel"}"#)
+            )),
+        ),
+        (200, r#"{"ok":true}"#),
+        (409, r#"{"error":{"code":"sealed","message":"this mailbox is sealed; its drafts are saved sealed"}}"#),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let list = emx.drafts("s1").unwrap();
+    assert_eq!(list[0].edited_by.as_ref().unwrap().name, "Anna Beispiel");
+    let f = list[0].fields();
+    assert_eq!(
+        (f.from.as_str(), f.subject.as_str(), f.sealed),
+        ("contact@elchi.dev", "Offerte", false)
+    );
+    let d = emx.draft("s1", "d1").unwrap();
+    assert_eq!(d.version, 4);
+    // A change on version 4: saved as 5, the web client's own fields kept.
+    let mut body = d.body.clone();
+    body["text"] = "Gerne, bis Freitag.".into();
+    let saved = emx.save_draft("s1", "d1", 4, &body).unwrap().done().unwrap();
+    assert_eq!(saved.version, 5);
+    // Made on 5 while somebody saved 6.
+    match emx.save_draft("s1", "d1", 5, &body).unwrap() {
+        emx_sdk::OnVersion::Changed(newer) => assert_eq!(newer.version, 6),
+        other => panic!("{other:?}"),
+    }
+    match emx.delete_draft("s1", "d1", Some(6)).unwrap() {
+        emx_sdk::OnVersion::Sent(d) => assert_eq!(d.sent_by.unwrap().name, "Anna Beispiel"),
+        other => panic!("{other:?}"),
+    }
+    assert!(emx.delete_draft("s1", "d1", None).unwrap().done().is_some());
+    let err = emx.save_draft("me", "d2", 0, &body).unwrap_err();
+    assert_eq!(err.code(), Some("sealed"));
+    let seen = seen.lock().unwrap();
+    let calls: Vec<(&str, &str)> = seen
+        .iter()
+        .map(|s| (s.method.as_str(), s.path.as_str()))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("GET", "/api/accounts/s1/drafts"),
+            ("GET", "/api/accounts/s1/drafts/d1"),
+            ("PUT", "/api/accounts/s1/drafts/d1"),
+            ("PUT", "/api/accounts/s1/drafts/d1"),
+            ("DELETE", "/api/accounts/s1/drafts/d1?version=6"),
+            ("DELETE", "/api/accounts/s1/drafts/d1"),
+            ("PUT", "/api/accounts/me/drafts/d2"),
+        ]
+    );
+    let put: serde_json::Value = serde_json::from_str(&seen[2].body).unwrap();
+    assert_eq!(put["version"], 4);
+    assert_eq!(put["body"]["answers"], "x9", "fields of the web client are kept");
+    assert_eq!(put["body"]["text"], "Gerne, bis Freitag.");
+    assert_eq!(seen[5].body, "", "a deletion sends no body");
+}
+
+const HELD: &str = r#"{"id":"o1","draft":"d1","account":"s1","kind":"later","sendAt":"2026-10-14T07:00:00Z","state":"held","createdAt":"2026-10-13T07:06:00Z","sender":{"id":"u1","name":"Samuel Krauss"}}"#;
+
+#[test]
+fn a_draft_is_sent_held_and_taken_back() {
+    let (base, seen) = server_with(vec![
+        (202, leak(format!(r#"{{"held":true,"outbox":{HELD}}}"#)), ""),
+        (200, r#"{"sent":true,"recipients":2}"#, "Idempotent-Replayed: true\r\n"),
+        (
+            409,
+            leak(format!(
+                r#"{{"error":{{"code":"sent","message":"the draft was sent already"}},"draft":{}}}"#,
+                SAVED.replace(r#""version":4"#, r#""version":5,"sentAt":"2026-10-13T07:06:00Z","sentBy":{"id":"u2","name":"Anna Beispiel"}"#)
+            )),
+            "",
+        ),
+        (
+            200,
+            leak(format!(
+                r#"{{"outbox":[{},{}]}}"#,
+                HELD.replace("}}", &format!(r#"}},"message":{SAVED}}}"#)),
+                HELD.replace(r#""state":"held""#, r#""state":"failed","errorCode":"daily_limit","errorMessage":"the daily limit is reached""#)
+            )),
+            "",
+        ),
+        (200, leak(format!(r#"{{"outbox":{}}}"#, HELD.replace("2026-10-14T07:00:00Z", "2026-10-15T07:00:00Z"))), ""),
+        (
+            200,
+            leak(format!(
+                r#"{{"draft":{},"attachments":[{{"filename":"Offerte.pdf","contentType":"application/pdf","data":"JVBERi0="}}]}}"#,
+                SAVED.replace(r#""version":4"#, r#""version":7"#)
+            )),
+            "",
+        ),
+        (404, r#"{"error":{"code":"not_found","message":"no such held message; it may have been sent"}}"#, ""),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let later = emx_sdk::Hold {
+        send_at: Some("2026-10-14T07:00:00Z".into()),
+        remind_days: Some(3),
+        ..Default::default()
+    };
+    let sent = emx
+        .send_draft("s1", "d1", 4, &draft(), &later, "k-later")
+        .unwrap()
+        .done()
+        .unwrap();
+    assert!(sent.held);
+    assert_eq!(sent.outbox.unwrap().send_at, "2026-10-14T07:00:00Z");
+    let undo = emx_sdk::Hold {
+        undo_seconds: Some(10),
+        ..Default::default()
+    };
+    let sent = emx
+        .send_draft("s1", "d1", 4, &draft(), &undo, "k-undo")
+        .unwrap()
+        .done()
+        .unwrap();
+    assert!(sent.sent && sent.replayed && !sent.held);
+    assert!(matches!(
+        emx.send_draft("s1", "d1", 4, &draft(), &undo, "k-other").unwrap(),
+        emx_sdk::OnVersion::Sent(_)
+    ));
+    let held = emx.outbox("s1").unwrap();
+    assert_eq!(held.len(), 2);
+    assert_eq!(held[0].message.as_ref().unwrap().fields().subject, "Offerte");
+    assert_eq!(
+        (held[1].state.as_str(), held[1].error_code.as_str()),
+        ("failed", "daily_limit")
+    );
+    let moved = emx.reschedule_held("s1", "o1", "2026-10-15T07:00:00Z").unwrap();
+    assert_eq!(moved.send_at, "2026-10-15T07:00:00Z");
+    let back = emx.cancel_held("s1", "o1").unwrap();
+    assert_eq!(back.draft.version, 7);
+    assert_eq!(back.attachments[0].filename, "Offerte.pdf");
+    assert!(emx.cancel_held("s1", "o1").unwrap_err().is_not_found());
+    let seen = seen.lock().unwrap();
+    let calls: Vec<(&str, &str)> = seen
+        .iter()
+        .map(|s| (s.method.as_str(), s.path.as_str()))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ("POST", "/api/accounts/s1/drafts/d1/send"),
+            ("POST", "/api/accounts/s1/drafts/d1/send"),
+            ("POST", "/api/accounts/s1/drafts/d1/send"),
+            ("GET", "/api/accounts/s1/outbox"),
+            ("PATCH", "/api/accounts/s1/outbox/o1"),
+            ("POST", "/api/accounts/s1/outbox/o1/cancel"),
+            ("POST", "/api/accounts/s1/outbox/o1/cancel"),
+        ]
+    );
+    let first: serde_json::Value = serde_json::from_str(&seen[0].body).unwrap();
+    assert_eq!(first["version"], 4);
+    assert_eq!(first["sendAt"], "2026-10-14T07:00:00Z");
+    assert_eq!(first["remindDays"], 3);
+    assert!(first.get("undoSeconds").is_none());
+    assert_eq!(first["message"]["to"], "anna@example.ch");
+    assert_eq!(seen[0].idempotency_key, "k-later");
+    let second: serde_json::Value = serde_json::from_str(&seen[1].body).unwrap();
+    assert_eq!(second["undoSeconds"], 10);
+    let moved: serde_json::Value = serde_json::from_str(&seen[4].body).unwrap();
+    assert_eq!(moved, serde_json::json!({"sendAt": "2026-10-15T07:00:00Z"}));
+}
+
+/// Send later in one call: the message is saved as a new draft, of the
+/// account the service puts it in, and sent from there.
+#[test]
+fn a_message_is_held_as_a_new_draft() {
+    let (base, seen) = server_with(vec![
+        (
+            200,
+            leak(format!(
+                r#"{{"draft":{}}}"#,
+                SAVED.replace(r#""version":4"#, r#""version":1"#)
+            )),
+            "",
+        ),
+        (202, leak(format!(r#"{{"held":true,"outbox":{HELD}}}"#)), ""),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let mut d = draft();
+    d.attachments.push(emx_sdk::DraftAttachment {
+        filename: "Offerte.pdf".into(),
+        data: "JVBERi0=".into(),
+        ..Default::default()
+    });
+    let hold = emx_sdk::Hold {
+        send_at: Some("2026-10-14T07:00:00Z".into()),
+        ..Default::default()
+    };
+    let sent = emx.send_held(ME, &d, &hold, "k1").unwrap();
+    assert_eq!(sent.outbox.unwrap().id, "o1");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].method, "PUT");
+    assert!(seen[0].path.starts_with("/api/accounts/me/drafts/"));
+    let id = seen[0].path.rsplit('/').next().unwrap().to_string();
+    assert_eq!(seen[1].path, format!("/api/accounts/s1/drafts/{}/send", "d1"));
+    let put: serde_json::Value = serde_json::from_str(&seen[0].body).unwrap();
+    assert_eq!(put["version"], 0);
+    assert_eq!(put["body"]["subject"], "Offerte");
+    assert_eq!(put["body"]["cc"], "");
+    assert!(put["body"].get("attachments").is_none(), "a draft keeps no files");
+    let send: serde_json::Value = serde_json::from_str(&seen[1].body).unwrap();
+    assert_eq!(send["version"], 1);
+    assert_eq!(send["message"]["attachments"][0]["filename"], "Offerte.pdf");
+    // A UUID of version 4.
+    assert_eq!(id.len(), 36);
+    assert_eq!(&id[14..15], "4");
+    assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"), "{id}");
+    assert_ne!(emx_sdk::new_draft_id(), emx_sdk::new_draft_id());
+}
+
+#[test]
+fn snippets() {
+    let snippet = r#"{"id":"n1","account":"u1","body":{"name":"thanks","text":"Hello {firstName},\n\nthank you!\n{myName}"},"createdAt":"2026-10-13T07:00:00Z","updatedAt":"2026-10-13T07:00:00Z"}"#;
+    let (base, seen) = server(vec![
+        (
+            200,
+            leak(format!(
+                r#"{{"snippets":[{snippet},{{"id":"n2","account":"u1","body":{{"sealed":"YWdl"}}}}],"editable":true}}"#
+            )),
+        ),
+        (200, leak(format!(r#"{{"snippet":{snippet}}}"#))),
+        (
+            409,
+            r#"{"error":{"code":"too_many","message":"an account keeps at most 200 snippets"}}"#,
+        ),
+        (200, r#"{"ok":true}"#),
+    ]);
+    let emx = Client::with_base_url(&base, "emx_test").unwrap();
+    let list = emx.snippets(ME).unwrap();
+    assert!(list.editable);
+    assert_eq!(list.snippets[0].name(), "thanks");
+    assert!(list.snippets[0].text().starts_with("Hello {firstName},"));
+    assert!(list.snippets[1].is_sealed() && list.snippets[1].name().is_empty());
+    assert_eq!(emx.save_snippet(ME, "n1", "thanks", "Hello").unwrap().id, "n1");
+    assert_eq!(
+        emx.save_snippet(ME, "n3", "more", "x").unwrap_err().code(),
+        Some("too_many")
+    );
+    emx.delete_snippet(ME, "n1").unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[1].method, "PUT");
+    assert_eq!(seen[1].path, "/api/accounts/me/snippets/n1");
+    assert_eq!(seen[1].body, r#"{"body":{"name":"thanks","text":"Hello"}}"#);
+    assert_eq!(
+        (seen[3].method.as_str(), seen[3].path.as_str()),
+        ("DELETE", "/api/accounts/me/snippets/n1")
+    );
+}
+
+/// The outcome of a change on a version, as the desktop app's window
+/// reads it.
+#[test]
+fn an_outcome_on_a_version_serializes_with_its_kind() {
+    let changed: emx_sdk::OnVersion<()> = emx_sdk::OnVersion::Changed(serde_json::from_str(SAVED).unwrap());
+    let v = serde_json::to_value(&changed).unwrap();
+    assert_eq!(v["outcome"], "changed");
+    assert_eq!(v["value"]["version"], 4);
+    let done = serde_json::to_value(emx_sdk::OnVersion::Done(1)).unwrap();
+    assert_eq!(done, serde_json::json!({"outcome": "done", "value": 1}));
+}

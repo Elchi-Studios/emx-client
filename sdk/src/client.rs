@@ -20,7 +20,7 @@ const MAX_WAIT: Duration = Duration::from_secs(30);
 /// How long a send may wait for its answer once the message is uploaded.
 /// The service gives the submission two minutes; a client that gave up
 /// earlier would leave the person not knowing whether the message went.
-const SEND_TIMEOUT: Duration = Duration::from_secs(150);
+pub(crate) const SEND_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// How long any other call may wait for its answer to begin.
 const ANSWER_TIMEOUT: Duration = Duration::from_secs(60);
@@ -604,14 +604,14 @@ impl Client {
 
     // --- The wire ----------------------------------------------------------
 
-    fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T, Error> {
+    pub(crate) fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, &str)]) -> Result<T, Error> {
         let resp = self.exchange("GET", &self.url(path, query), None, &[], None, Repeat::Safe)?;
         Ok(self.decode(resp)?.0)
     }
 
     /// A call with a JSON body. `repeat` says whether a `503 try_later`
     /// may be answered by making the call again: see [`Repeat`].
-    fn send<B: serde::Serialize, T: DeserializeOwned>(
+    pub(crate) fn send<B: serde::Serialize, T: DeserializeOwned>(
         &self,
         method: &str,
         path: &str,
@@ -664,7 +664,7 @@ impl Client {
     /// same again and is returned at once, and so is a longer pause: the
     /// error carries it as `retry_after` and the caller decides whether
     /// to wait, instead of hanging without a word.
-    fn exchange(
+    pub(crate) fn exchange(
         &self,
         method: &str,
         url: &str,
@@ -844,7 +844,7 @@ impl Client {
     /// Decodes a JSON answer, or turns a refusal into its error. Answers
     /// whether the service replayed an answer kept under an
     /// `Idempotency-Key`.
-    fn decode<T: DeserializeOwned>(
+    pub(crate) fn decode<T: DeserializeOwned>(
         &self,
         resp: ureq::http::Response<ureq::Body>,
     ) -> Result<(T, bool), Error> {
@@ -870,7 +870,10 @@ impl Client {
     /// [`refusal`](Client::refusal), and the answer's JSON body when it
     /// had one, for a refusal that carries more than the error, as a
     /// draft's `409` carries the draft.
-    fn refusal_with(&self, resp: ureq::http::Response<ureq::Body>) -> (Error, Option<serde_json::Value>) {
+    pub(crate) fn refusal_with(
+        &self,
+        resp: ureq::http::Response<ureq::Body>,
+    ) -> (Error, Option<serde_json::Value>) {
         let status = resp.status().as_u16();
         let retry_after = resp
             .headers()
@@ -968,7 +971,7 @@ impl Client {
         (e, body)
     }
 
-    fn url(&self, path: &str, query: &[(&str, &str)]) -> String {
+    pub(crate) fn url(&self, path: &str, query: &[(&str, &str)]) -> String {
         let mut url = format!("{}{}", self.base, path);
         let mut first = true;
         for (k, v) in query {
@@ -1024,7 +1027,7 @@ fn sha256_etag(etag: &str) -> Option<[u8; 32]> {
 /// A key the service takes: 1 to 200 visible ASCII characters. Any other
 /// is refused before anything is sent, as an empty one would send without
 /// the protection and a longer one is refused by the service.
-fn check_key(key: &str) -> Result<(), Error> {
+pub(crate) fn check_key(key: &str) -> Result<(), Error> {
     if key.is_empty() || key.len() > 200 || !key.bytes().all(|b| b.is_ascii_graphic()) {
         return Err(Error::Config(
             "an idempotency key is 1 to 200 visible ASCII characters, without spaces".into(),
