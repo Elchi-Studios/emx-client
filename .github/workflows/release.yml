@@ -1,0 +1,138 @@
+name: Release desktop app
+
+# A tag desktop-v<version>, with the version of tauri.conf.json, builds the
+# installers and publishes them as a GitHub release with the updater's
+# latest.json. Nothing here makes the tag: Samuel does.
+#
+# Signing is optional, so the workflow works before any certificate
+# exists; what is not set is built unsigned. Repository secrets:
+#
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#       the updater's key (npm run tauri signer generate), with the
+#       repository variable TAURI_UPDATER_PUBKEY holding its public half
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY
+#       Developer ID certificate (.p12 as base64); with APPLE_ID,
+#       APPLE_PASSWORD and APPLE_TEAM_ID the build is notarized as well
+#   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD
+#       code signing certificate (.pfx as base64)
+
+on:
+  push:
+    tags: ["desktop-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    name: The tag names the app's version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          version=$(node -p "require('./desktop/src-tauri/tauri.conf.json').version")
+          if [ "$GITHUB_REF_NAME" != "desktop-v$version" ]; then
+            echo "The tag is $GITHUB_REF_NAME but tauri.conf.json says $version" >&2
+            exit 1
+          fi
+
+  build:
+    name: Installers for ${{ matrix.name }}
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            args: --bundles appimage,deb
+          - name: macOS
+            os: macos-latest
+            args: --target universal-apple-darwin --bundles app,dmg
+          - name: Windows
+            os: windows-latest
+            args: --bundles nsis
+    runs-on: ${{ matrix.os }}
+    env:
+      NO_STRIP: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Tauri's Linux prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+      - run: npm ci --ignore-scripts
+        working-directory: desktop
+
+      - name: Windows code signing certificate, when there is one
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE) { Write-Host "No Windows certificate: the installer is unsigned."; exit 0 }
+          $pfx = Join-Path $env:RUNNER_TEMP 'certificate.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          "WINDOWS_CERTIFICATE_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+
+      - name: Signing, for what there are secrets for
+        shell: bash
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          UPDATER_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          MAC_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          MAC_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          MAC_ID: ${{ secrets.APPLE_ID }}
+          MAC_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          MAC_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$UPDATER_KEY" ] && [ -n "$UPDATER_PUBKEY" ]; then
+            echo "TAURI_SIGNING_PRIVATE_KEY=$UPDATER_KEY" >> "$GITHUB_ENV"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$UPDATER_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "TAURI_UPDATER_PUBKEY=$UPDATER_PUBKEY" >> "$GITHUB_ENV"
+          else
+            echo "No updater key or public key: no update files, and the app will not offer updates."
+          fi
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            if [ -n "$MAC_CERTIFICATE" ] && [ -n "$MAC_IDENTITY" ]; then
+              echo "APPLE_CERTIFICATE=$MAC_CERTIFICATE" >> "$GITHUB_ENV"
+              echo "APPLE_CERTIFICATE_PASSWORD=$MAC_CERTIFICATE_PASSWORD" >> "$GITHUB_ENV"
+              echo "APPLE_SIGNING_IDENTITY=$MAC_IDENTITY" >> "$GITHUB_ENV"
+              if [ -n "$MAC_ID" ] && [ -n "$MAC_PASSWORD" ] && [ -n "$MAC_TEAM" ]; then
+                echo "APPLE_ID=$MAC_ID" >> "$GITHUB_ENV"
+                echo "APPLE_PASSWORD=$MAC_PASSWORD" >> "$GITHUB_ENV"
+                echo "APPLE_TEAM_ID=$MAC_TEAM" >> "$GITHUB_ENV"
+              fi
+            else
+              echo "No Apple certificate: the app is unsigned."
+            fi
+          fi
+      - name: The configuration the secrets allow
+        shell: bash
+        run: echo "TAURI_CONFIG=$(node desktop/scripts/release-config.mjs)" >> "$GITHUB_ENV"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: EMX desktop v__VERSION__
+          releaseBody: See the README for how to install, and what the warnings of an unsigned build mean.
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: true
+          args: ${{ matrix.args }}
