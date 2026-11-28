@@ -27,6 +27,9 @@ pub enum Outcome {
     Conflict { draft: Saved },
     /// The draft was sent from somewhere else.
     Sent,
+    /// The mailbox is sealed: the server refuses a draft in clear, and
+    /// the app has no key to seal it, so nothing is saved anywhere.
+    Sealed,
 }
 
 /// An ID or an account is put into a path: only what the service itself
@@ -74,6 +77,9 @@ pub fn save(c: &Client, account: &str, id: &str, version: i64, body: &Value) -> 
         }),
         Err(Error::Api {
             status: 409, code, ..
+        }) if code == "sealed" => Ok(Outcome::Sealed),
+        Err(Error::Api {
+            status: 409, code, ..
         }) => {
             // The refusal carries the newer draft, which the SDK's error
             // does not keep: ask for it.
@@ -87,6 +93,23 @@ pub fn save(c: &Client, account: &str, id: &str, version: i64, body: &Value) -> 
         }
         Err(e) => Err(e),
     }
+}
+
+/// The person's own unsent drafts, newest first, to be picked up again.
+/// Sent ones and those of a sealed mailbox (their body is ciphertext the
+/// app cannot open) are left out.
+pub fn list(c: &Client) -> Result<Vec<Saved>, Error> {
+    let v = c.get_json("/api/accounts/me/drafts", &[])?;
+    Ok(v.get("drafts")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter(|d| d.get("sentAt").is_none_or(Value::is_null))
+                .filter(|d| d.pointer("/body/sealed").is_none())
+                .filter_map(|d| read(&json!({ "draft": d })))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// Removes a draft, at `version` when that is not 0. One that is gone
@@ -202,6 +225,39 @@ mod tests {
         ]);
         let c = Client::with_base_url(&base, "emx_test").unwrap();
         assert_eq!(save(&c, "acc9", "d-1", 3, &json!({})).unwrap(), Outcome::Sent);
+    }
+
+    #[test]
+    fn a_sealed_mailbox_is_told_and_nothing_is_kept() {
+        let (base, seen) = server(vec![(
+            409,
+            r#"{"error":{"code":"sealed","message":"this mailbox is sealed"}}"#,
+        )]);
+        let c = Client::with_base_url(&base, "emx_test").unwrap();
+        assert_eq!(
+            save(&c, "me", "d-1", 0, &json!({"text": "x"})).unwrap(),
+            Outcome::Sealed
+        );
+        seen.recv().unwrap();
+        // No second request, such as a fetch of the draft, followed.
+        assert!(seen.recv_timeout(std::time::Duration::from_millis(200)).is_err());
+    }
+
+    #[test]
+    fn saved_drafts_are_listed_without_sent_or_sealed_ones() {
+        let (base, seen) = server(vec![(
+            200,
+            r#"{"drafts":[
+              {"id":"a","account":"acc9","version":2,"body":{"subject":"One"}},
+              {"id":"b","account":"acc9","version":1,"body":{"sealed":"xyz"}},
+              {"id":"c","account":"acc9","version":3,"body":{},"sentAt":"2026-11-27T10:00:00Z"}
+            ]}"#,
+        )]);
+        let c = Client::with_base_url(&base, "emx_test").unwrap();
+        let got = list(&c).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!((got[0].id.as_str(), got[0].version), ("a", 2));
+        assert!(seen.recv().unwrap().starts_with("GET /api/accounts/me/drafts "));
     }
 
     #[test]

@@ -488,6 +488,13 @@ async fn save_draft(
     blocking(move || drafts::save(&c, &account, &id, version, &body)).await
 }
 
+/// The person's unsent drafts, to open one again in the composer.
+#[tauri::command]
+async fn list_drafts(state: State<'_, Shared>) -> Outcome<Vec<drafts::Saved>> {
+    let c = client(&state)?;
+    blocking(move || drafts::list(&c)).await
+}
+
 /// Removes the draft, after the message was sent or thrown away.
 #[tauri::command]
 async fn delete_draft(state: State<'_, Shared>, account: String, id: String, version: i64) -> Outcome<()> {
@@ -631,6 +638,7 @@ pub fn run() {
             contacts,
             set_contact,
             save_draft,
+            list_drafts,
             delete_draft,
         ])
         .run(tauri::generate_context!())

@@ -17,7 +17,18 @@ class State {
   open = $state<FullMessage | null>(null);
   query = $state('');
   searching = $state(false);
-  composing = $state<null | { to?: string; subject?: string; text?: string; inReplyTo?: string; references?: string[] }>(null);
+  composing = $state<null | {
+    to?: string;
+    cc?: string;
+    subject?: string;
+    text?: string;
+    inReplyTo?: string;
+    references?: string[];
+    // A saved draft taken up again: it goes on at its version.
+    draft?: { id: string; account: string; version: number; from?: string };
+  }>(null);
+  // Whether the list of saved drafts is open.
+  draftsOpen = $state(false);
   notice = $state('');
   problem = $state('');
   // A question waiting for an answer, such as "Delete for good?". While

@@ -4,13 +4,14 @@
 
 - Desktop app: installers for Windows (NSIS), macOS (universal DMG) and
   Linux (AppImage and .deb), built on all three systems for every pull
-  request and published by `release.yml` on a `desktop-v*` tag, with the
+  request and put in a draft release by `release.yml` on a `desktop-v*` tag, with the
   updater's `latest.json`. The app updates itself from those releases and
   asks before it installs. Signing is optional: without the secrets the
   builds are unsigned.
 - Desktop app: the token is kept in the system keychain; one left in
   `session.json` by an earlier version is moved there. Drafts are saved
-  on the server as the web client does. A tray icon shows the unread
+  on the server as the web client does, and a saved draft can be opened
+  again from the sidebar. A sealed mailbox's drafts are not saved. A tray icon shows the unread
   count, and new mail is a system notification.
 - `emx send` keeps every `--to`, `--cc` and `--bcc` when one is given
   more than once; it used to keep the last one only. Any other flag given

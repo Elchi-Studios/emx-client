@@ -120,7 +120,8 @@ export interface SavedDraft {
 export type DraftSave =
   | { status: 'saved'; draft: SavedDraft }
   | { status: 'conflict'; draft: SavedDraft }
-  | { status: 'sent' };
+  | { status: 'sent' }
+  | { status: 'sealed' };
 export interface Failure {
   code: string;
   message: string;
@@ -198,6 +199,7 @@ export const emx = {
   send: (draft: Draft, idempotencyKey: string) => invoke<number>('send', { draft, idempotencyKey }),
   saveDraft: (account: string, id: string, version: number, body: Record<string, unknown>) =>
     invoke<DraftSave>('save_draft', { account, id, version, body }),
+  listDrafts: () => invoke<SavedDraft[]>('list_drafts'),
   deleteDraft: (account: string, id: string, version: number) =>
     invoke<void>('delete_draft', { account, id, version }),
   contacts: (account: string, state: string) => invoke('contacts', { account, contactState: state }),

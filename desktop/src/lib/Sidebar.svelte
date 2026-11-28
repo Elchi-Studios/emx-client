@@ -22,6 +22,10 @@
         {#if m.unseen > 0}<span class="count">{m.unseen}</span>{/if}
       </button>
     {/each}
+    <button class="box" onclick={() => (app.draftsOpen = true)}>
+      <span class="icon">{icons.drafts}</span>
+      <span class="name">Saved drafts</span>
+    </button>
   </nav>
   <div class="grow"></div>
   <div class="me">

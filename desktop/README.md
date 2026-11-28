@@ -60,8 +60,8 @@ On Linux the tray needs `libayatana-appindicator3-dev` as well.
 For maintainers. A tag `desktop-v<version>`, with the version in
 `src-tauri/tauri.conf.json`, runs `.github/workflows/release.yml`: it
 builds the Windows NSIS installer, the macOS universal DMG and the Linux
-AppImage and `.deb`, and publishes them as a release with the updater's
-`latest.json`. Every pull request builds the same installers, unsigned,
+AppImage and `.deb`, and attaches them to a draft release with the updater's
+`latest.json`. Publishing the draft is done by hand. Every pull request builds the same installers, unsigned,
 on all three systems.
 
 The workflow signs with what it finds and builds unsigned without it:
@@ -87,6 +87,11 @@ The workflow signs with what it finds and builds unsigned without it:
   the same drafts the web client keeps, so a message begun here can be
   finished there. Sending or discarding deletes the draft. If the draft
   changed elsewhere meanwhile, the app asks before it replaces it.
+  "Saved drafts" in the sidebar lists them and opens one again; closing
+  the composer keeps a saved draft, Discard deletes it.
+- A sealed mailbox's drafts are not saved at all: the server refuses
+  them in clear and the app has no key to seal them, so nothing is kept
+  here or on the server, and the composer says so.
 - A tray icon shows the unread count of the inboxes (in its tooltip and
   menu, and beside the icon on macOS), and each new message in the inbox
   is a system notification. They are ordinary notifications, so the
@@ -109,7 +114,6 @@ written in it asks before the text is thrown away.
 ## What is not here yet
 
 Sealed mailboxes open in the web client only, because the key lives
-there. A saved draft cannot be reopened in the app yet, only finished in
-the web client; a sealed mailbox's drafts are not saved here.
+there, and a sealed mailbox's drafts are not saved here.
 
 GNU Affero General Public License 3.0.
