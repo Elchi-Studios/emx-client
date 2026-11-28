@@ -85,9 +85,12 @@ fn main() -> Result<(), emx_sdk::Error> {
 }
 ```
 
-The desktop app: `cd desktop && npm ci --ignore-scripts && npm run tauri build`.
-Tauri's prerequisites for each system are at
-[tauri.app](https://tauri.app/start/prerequisites/).
+The desktop app: download an installer for Windows, macOS or Linux from the
+[releases](https://github.com/Elchi-Studios/emx-client/releases/latest); it
+updates itself. The [desktop README](desktop/README.md) says what the
+warnings of an unsigned build mean. To build it yourself:
+`cd desktop && npm ci --ignore-scripts && npm run tauri build`, with Tauri's
+[prerequisites](https://tauri.app/start/prerequisites/).
 
 ## Design
 
@@ -97,8 +100,8 @@ Tauri's prerequisites for each system are at
   tested against the RFC vectors.
 - **One token, kept by the person.** A token is made in the web client
   with the scopes it needs and stored in a file only that person can
-  read. In the desktop app it stays on the Rust side; the window never
-  sees it.
+  read by the command line, in the system keychain by the desktop app.
+  In the desktop app it stays on the Rust side; the window never sees it.
 - **Nothing hidden.** Every call the SDK makes is in the API reference.
   Each call the command line and the desktop app make has a test in
   `sdk/tests` against a scripted server that answers the way the
@@ -129,8 +132,9 @@ Alpha. The SDK covers the calls a person's token makes for mail:
 reading, searching, sending, folders, the event stream and webhooks.
 Drafts, the administration calls and push are not in it yet. The
 command line does what the README shows, and the desktop app reads,
-searches, replies and follows the account live. Drafts between
-sessions, a keychain for the token and system notifications are next.
+searches, replies and follows the account live, keeps its token in the
+system keychain, saves drafts on the server, shows the unread count in
+the tray, notifies of new mail and updates itself.
 
 ```sh
 cargo test --workspace --exclude emx-desktop

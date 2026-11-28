@@ -5,12 +5,13 @@
   import MessageList from './MessageList.svelte';
   import MessageView from './MessageView.svelte';
   import Composer from './Composer.svelte';
+  import DraftList from './DraftList.svelte';
 
   // Keys, when nothing is being typed or chosen, and no composer or
   // question is open over the list: a key meant for those must not act
   // on the message behind them.
   function keys(e: KeyboardEvent): void {
-    if (app.composing || app.asking) return;
+    if (app.composing || app.asking || app.draftsOpen) return;
     const t = e.target as HTMLElement;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -93,6 +94,9 @@
 
 {#if app.composing}
   <Composer />
+{/if}
+{#if app.draftsOpen}
+  <DraftList />
 {/if}
 
 <style>

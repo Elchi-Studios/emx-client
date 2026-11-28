@@ -108,6 +108,20 @@ export interface Draft {
   references?: string[];
   attachments?: { filename: string; contentType: string; data: string }[];
 }
+/// A draft as the server holds it, at a version.
+export interface SavedDraft {
+  id: string;
+  account: string;
+  version: number;
+  body: Record<string, unknown>;
+}
+/// What came of saving a draft: saved, refused because somebody saved a
+/// newer version meanwhile (with that one), or sent from elsewhere.
+export type DraftSave =
+  | { status: 'saved'; draft: SavedDraft }
+  | { status: 'conflict'; draft: SavedDraft }
+  | { status: 'sent' }
+  | { status: 'sealed' };
 export interface Failure {
   code: string;
   message: string;
@@ -183,6 +197,11 @@ export const emx = {
   savePart: (account: string, id: string, part: string, filename: string) =>
     invoke<string>('save_part', { account, id, part, filename }),
   send: (draft: Draft, idempotencyKey: string) => invoke<number>('send', { draft, idempotencyKey }),
+  saveDraft: (account: string, id: string, version: number, body: Record<string, unknown>) =>
+    invoke<DraftSave>('save_draft', { account, id, version, body }),
+  listDrafts: () => invoke<SavedDraft[]>('list_drafts'),
+  deleteDraft: (account: string, id: string, version: number) =>
+    invoke<void>('delete_draft', { account, id, version }),
   contacts: (account: string, state: string) => invoke('contacts', { account, contactState: state }),
   setContact: (account: string, address: string, state: string) =>
     invoke<void>('set_contact', { account, address, contactState: state }),

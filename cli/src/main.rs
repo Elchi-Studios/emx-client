@@ -289,8 +289,6 @@ fn read_hidden() -> Result<String, String> {
         .stdin(std::process::Stdio::inherit())
         .status()
         .is_ok();
-    #[cfg(not(unix))]
-    let quiet = false;
     let mut s = String::new();
     let r = std::io::stdin().read_line(&mut s);
     #[cfg(unix)]

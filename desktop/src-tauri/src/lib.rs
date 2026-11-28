@@ -7,6 +7,11 @@
 //! blocking work: a plain command runs on the main thread, and the
 //! window would freeze while it waits.
 
+mod drafts;
+mod keychain;
+mod notify;
+mod update;
+
 use emx_sdk::{Changes, Client, Contact, Draft, Error, FullMessage, Mailbox, Me, Message, Page};
 use serde::Serialize;
 use std::fs;
@@ -149,41 +154,45 @@ where
     }
 }
 
-// --- The token on disk ---------------------------------------------------
+// --- The token ----------------------------------------------------------
 
+/// Where the token was kept before the keychain: only read, to move it.
 fn token_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     Ok(dir.join("session.json"))
 }
 
-fn save_token(app: &AppHandle, base_url: &str, token: &str) -> Result<(), String> {
-    let p = token_path(app)?;
-    let body = serde_json::json!({"baseUrl": base_url, "token": token});
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let f = opts.open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
-    serde_json::to_writer(f, &body).map_err(|e| e.to_string())
+/// Keeps the token in the keychain. Talking to it can wait for the
+/// system, so it runs where blocking is allowed.
+async fn save_token(app: &AppHandle, base_url: String, token: String) -> Outcome<()> {
+    let path = token_path(app)?;
+    blocking(move || keychain::save(&keychain::Keychain, &path, &base_url, &token)).await
 }
 
-fn load_token(app: &AppHandle) -> Option<(String, String)> {
-    let raw = fs::read_to_string(token_path(app).ok()?).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let base = v.get("baseUrl")?.as_str()?.to_string();
-    let token = v.get("token")?.as_str()?.to_string();
-    Some((base, token))
+async fn load_token(app: &AppHandle) -> Option<(String, String)> {
+    let path = token_path(app).ok()?;
+    blocking(move || Ok::<_, String>(keychain::load(&keychain::Keychain, &path)))
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn forget_token(app: &AppHandle) {
+    if let Ok(path) = token_path(app) {
+        let _ = blocking(move || {
+            keychain::clear(&keychain::Keychain, &path);
+            Ok::<_, String>(())
+        })
+        .await;
+    }
 }
 
 // --- Sign in -------------------------------------------------------------
 
 /// Signs in with a token: asks EMX who it belongs to, then starts the
-/// watchers. With `keep`, the token is written to disk as well, in the
-/// same step, so that a sign-out meanwhile cannot leave it behind.
+/// watchers. With `keep`, the token is put into the keychain as well,
+/// and taken out again when a sign-out came meanwhile.
 async fn connect(
     app: &AppHandle,
     state: &Shared,
@@ -202,15 +211,19 @@ async fn connect(
         }
     })
     .await?;
-    let mut s = state.lock().unwrap();
-    if n != s.generation {
+    if state.lock().unwrap().generation != n {
         return Err(signed_out());
     }
     if keep {
-        save_token(app, &base_url, &token)?;
+        save_token(app, base_url, token).await?;
     }
-    let stop = s.complete(n, c.clone()).ok_or_else(signed_out)?;
-    drop(s);
+    let stop = state.lock().unwrap().complete(n, c.clone());
+    let Some(stop) = stop else {
+        if keep {
+            forget_token(app).await;
+        }
+        return Err(signed_out());
+    };
     for account in &me.accounts {
         watch(app.clone(), c.clone(), account.id.clone(), stop.clone());
     }
@@ -233,7 +246,7 @@ async fn sign_in(app: AppHandle, state: State<'_, Shared>, base_url: String, tok
 /// offline and calls this again, instead of asking to sign in.
 #[tauri::command]
 async fn resume(app: AppHandle, state: State<'_, Shared>) -> Outcome<Option<Me>> {
-    match load_token(&app) {
+    match load_token(&app).await {
         Some((base, token)) => connect(&app, &state, base, token, false).await.map(Some),
         None => Ok(None),
     }
@@ -242,11 +255,9 @@ async fn resume(app: AppHandle, state: State<'_, Shared>) -> Outcome<Option<Me>>
 /// Forgets the token here. Revoking it is done in the web client.
 #[tauri::command]
 async fn sign_out(app: AppHandle, state: State<'_, Shared>) -> Outcome<()> {
-    let mut s = state.lock().unwrap();
-    s.sign_out();
-    if let Ok(p) = token_path(&app) {
-        let _ = fs::remove_file(p);
-    }
+    state.lock().unwrap().sign_out();
+    forget_token(&app).await;
+    notify::clear_unread(&app);
     Ok(())
 }
 
@@ -461,6 +472,36 @@ async fn set_contact(
     blocking(move || c.set_contact(&account, &address, &contact_state, "")).await
 }
 
+// --- Drafts ------------------------------------------------------------------
+
+/// Saves the composer's draft on the server, as the web client does.
+/// `version` is the one the last save answered with, 0 for the first.
+#[tauri::command]
+async fn save_draft(
+    state: State<'_, Shared>,
+    account: String,
+    id: String,
+    version: i64,
+    body: serde_json::Value,
+) -> Outcome<drafts::Outcome> {
+    let c = client(&state)?;
+    blocking(move || drafts::save(&c, &account, &id, version, &body)).await
+}
+
+/// The person's unsent drafts, to open one again in the composer.
+#[tauri::command]
+async fn list_drafts(state: State<'_, Shared>) -> Outcome<Vec<drafts::Saved>> {
+    let c = client(&state)?;
+    blocking(move || drafts::list(&c)).await
+}
+
+/// Removes the draft, after the message was sent or thrown away.
+#[tauri::command]
+async fn delete_draft(state: State<'_, Shared>, account: String, id: String, version: i64) -> Outcome<()> {
+    let c = client(&state)?;
+    blocking(move || drafts::delete(&c, &account, &id, version)).await
+}
+
 // --- Following the account -------------------------------------------------
 
 /// What the window hears when something changed.
@@ -482,6 +523,7 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>)
     std::thread::spawn(move || {
         let mut pause = 1u64;
         let mut last = 0i64;
+        let mut follower = notify::Follower::default();
         while !stop.load(Ordering::Relaxed) {
             let opened = std::time::Instant::now();
             let stream = match client.events(&account) {
@@ -509,6 +551,7 @@ fn watch(app: AppHandle, client: Client, account: String, stop: Arc<AtomicBool>)
                                 modseq,
                             },
                         );
+                        follower.changed(&app, &client, &account, modseq);
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -552,6 +595,27 @@ fn base64(data: &[u8]) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            let handle = app.handle();
+            // Without a tray (a Linux desktop that has none) the app
+            // still works as a window.
+            let _ = notify::setup(handle);
+            update::check_at_start(handle.clone());
+            Ok(())
+        })
+        // With a tray, closing the window leaves the app running in it,
+        // which is what notifications need; "Quit" in the tray ends it.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.app_handle().tray_by_id("main").is_some() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .manage(Mutex::new(App::default()))
         .invoke_handler(tauri::generate_handler![
             sign_in,
@@ -573,6 +637,9 @@ pub fn run() {
             send,
             contacts,
             set_contact,
+            save_draft,
+            list_drafts,
+            delete_draft,
         ])
         .run(tauri::generate_context!())
         .expect("the app could not start");
@@ -596,7 +663,7 @@ mod tests {
                 assert!(next.trim_start().starts_with("async fn "), "not async: {next}");
             }
         }
-        assert!(commands >= 19, "found {commands} commands");
+        assert!(commands >= 21, "found {commands} commands");
     }
 
     #[test]
